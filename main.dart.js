@@ -25176,18 +25176,6 @@ s=2
 return A.P(q.a.bo(a0),$async$aro)
 case 2:return A.L(null,r)}})
 return A.M($async$aro,r)},
-GZ(a,b,c){var s=0,r=A.N(t.H),q,p,o
-var $async$GZ=A.J(function(d,e){if(d===1)return A.K(e,r)
-while(true)switch(s){case 0:p=$.bZ
-o=(p==null?$.bZ=$.ek():p).eG("[DEFAULT]")
-A.cV(o,$.dP(),!0)
-q=A.m2(new A.d7(o)).dN("Battles").dP(b)
-p=A.air(A.am([c+".last_action",a,c+".turn_ready",!0],t.K,t.X))
-p.toString
-s=2
-return A.P(q.a.bo(p),$async$GZ)
-case 2:return A.L(null,r)}})
-return A.M($async$GZ,r)},
 wQ:function wQ(a,b,c){this.c=a
 this.d=b
 this.a=c},
@@ -26267,6 +26255,18 @@ aJs(a){var s=null,r=A.dI(s,s,s,s,s,s,s,s,s,s,s,s,s,s,s,s,s,a.a,s),q=A.dI(s,s,s,s
 return A.afA(A.dI(s,s,s,s,s,s,s,s,s,s,s,s,s,s,s,s,s,a.y,s),A.dI(s,s,s,s,s,s,s,s,s,s,s,s,s,s,s,s,s,a.z,s),A.dI(s,s,s,s,s,s,s,s,s,s,s,s,s,s,s,s,s,a.Q,s),r,q,p,o,n,m,A.dI(s,s,s,s,s,s,s,s,s,s,s,s,s,s,s,s,s,a.as,s),A.dI(s,s,s,s,s,s,s,s,s,s,s,s,s,s,s,s,s,a.at,s),A.dI(s,s,s,s,s,s,s,s,s,s,s,s,s,s,s,s,s,a.ax,s),l,k,j)},
 aRt(a){return a},
 aRn(a){return new A.ri(a)},
+GZ(a,b,c){var s=0,r=A.N(t.H),q,p,o
+var $async$GZ=A.J(function(d,e){if(d===1)return A.K(e,r)
+while(true)switch(s){case 0:p=$.bZ
+o=(p==null?$.bZ=$.ek():p).eG("[DEFAULT]")
+A.cV(o,$.dP(),!0)
+q=A.m2(new A.d7(o)).dN("Battles").dP(b)
+p=A.air(A.am([c+".last_action",a,c+".turn_ready",!0],t.K,t.X))
+p.toString
+s=2
+return A.P(q.a.bo(p),$async$GZ)
+case 2:return A.L(null,r)}})
+return A.M($async$GZ,r)},
 aGN(){return B.G8},
 aJ5(a){var s=t.t_
 switch(a.toLowerCase()){case"fuoco":return A.c([B.u0,B.Lw],s)
