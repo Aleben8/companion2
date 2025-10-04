@@ -86673,7 +86673,7 @@ if(q!=null){p=q.h(0,"Description")
 r=A.aR(p==null?"":p)
 q.h(0,"Color")
 if(t.a.b(q.h(0,"Effect")))A.nM(q.h(0,"Effect"),t.N,t.z)}}p=this.a
-return new A.uW(p,this.b,r,"images/Icons/"+p+".svg",null)},
+return new A.uW(p,this.b,r,"images/Icons/"+p+".png",null)},
 $S:555}
 A.uW.prototype={
 N(a){var s,r=this,q=null,p=A.f2(8),o=A.KA(B.j,2),n=t.V,m=A.b([new A.b6(0,B.v,B.IC,new A.i(0,4),8)],n),l=A.bR(a,q,t.w).w,k=A.zl(A.cW(q,q,B.q,q,q,new A.cj(B.j,q,q,q,A.b([new A.b6(0,B.v,A.as(B.d.az(76.5),B.l.C()>>>16&255,B.l.C()>>>8&255,B.l.C()&255),B.Ri,10)],n),q,B.a0),q,180,q,q,q,q,q),B.bk,new A.Bh(8,40))
