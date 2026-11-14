@@ -349,8 +349,26 @@ class _BattleTabState extends State<BattleTab> {
 
               bool isSel(String a, [String? m]) => chosenAction == a && chosenMove == m;
 
+              // Sezione che si apre sotto l'opzione selezionata: Conferma / stato dell'invio.
+              Widget? footer(bool sel, List<Color> cs) => sel
+                  ? _ChoiceFooter(
+                      locked: locked,
+                      sending: _sending && !mineReady,
+                      resolving: resolving,
+                      oppReady: oppReady,
+                      oppLabel: oppLabel,
+                      colors: cs,
+                      onConfirm: () => _confirm(myKey, me),
+                    )
+                  : null;
+
               return Column(children: [
                 const SectionTitle('Scegli la tua azione'),
+                const Padding(
+                  padding: EdgeInsets.only(left: 4, bottom: 2),
+                  child: Text("Tocca un'azione: sotto si apre il pulsante Conferma.",
+                      style: TextStyle(color: Pal.sub, fontSize: 12)),
+                ),
                 for (final e in moves.entries)
                   Builder(builder: (_) {
                     final dmg = (e.value['Dmg'] as num?)?.round() ?? 1;
@@ -363,6 +381,7 @@ class _BattleTabState extends State<BattleTab> {
                       selected: sel,
                       dimmed: locked && !sel,
                       disabledReason: noEnergy ? 'Energia insufficiente (hai $energy, servono $cost)' : null,
+                      expanded: footer(sel, typeColors(e.value['MoveType'] as String?)),
                       onTap: locked
                           ? null
                           : () => noEnergy
@@ -370,31 +389,26 @@ class _BattleTabState extends State<BattleTab> {
                               : _select(act, move: e.key),
                     );
                   }),
-                Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  Expanded(
-                    child: _ActionTile(
-                      title: 'Difesa',
-                      subtitle: 'Danno dimezzato, +3 energie',
-                      icon: Icons.shield,
-                      colors: const [Color(0xFF5BC236), Color(0xFFA6E08C)],
-                      selected: isSel('defense'),
-                      dimmed: locked && !isSel('defense'),
-                      onTap: locked ? null : () => _select('defense'),
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: _ActionTile(
-                      title: 'Schiva',
-                      subtitle: 'Evita i colpi non imbloccabili',
-                      icon: Icons.speed,
-                      colors: const [Color(0xFF757575), Color(0xFFBDBDBD)],
-                      selected: isSel('dodge'),
-                      dimmed: locked && !isSel('dodge'),
-                      onTap: locked ? null : () => _select('dodge'),
-                    ),
-                  ),
-                ]),
+                _ActionTile(
+                  title: 'Difesa',
+                  subtitle: 'Danno dimezzato, +3 energie',
+                  icon: Icons.shield,
+                  colors: const [Color(0xFF5BC236), Color(0xFFA6E08C)],
+                  selected: isSel('defense'),
+                  dimmed: locked && !isSel('defense'),
+                  expanded: footer(isSel('defense'), const [Color(0xFF5BC236), Color(0xFFA6E08C)]),
+                  onTap: locked ? null : () => _select('defense'),
+                ),
+                _ActionTile(
+                  title: 'Schiva',
+                  subtitle: 'Evita i colpi non imbloccabili',
+                  icon: Icons.speed,
+                  colors: const [Color(0xFF757575), Color(0xFFBDBDBD)],
+                  selected: isSel('dodge'),
+                  dimmed: locked && !isSel('dodge'),
+                  expanded: footer(isSel('dodge'), const [Color(0xFF757575), Color(0xFFBDBDBD)]),
+                  onTap: locked ? null : () => _select('dodge'),
+                ),
                 _ActionTile(
                   title: 'Pozione  ×$potions',
                   subtitle: '+$kPotionHeal PS, richiede il turno',
@@ -402,6 +416,7 @@ class _BattleTabState extends State<BattleTab> {
                   colors: itemDef(ItemId.pozione).colors,
                   selected: isSel('potion'),
                   dimmed: (locked && !isSel('potion')) || potions <= 0 || hp >= maxHp,
+                  expanded: footer(isSel('potion'), itemDef(ItemId.pozione).colors),
                   onTap: locked
                       ? null
                       : () => potions <= 0
@@ -440,17 +455,6 @@ class _BattleTabState extends State<BattleTab> {
                     ),
                   ),
                 ]),
-                _ConfirmPanel(
-                  chosenText: _actionName(chosenAction, chosenMove),
-                  hasChoice: chosenAction != null,
-                  locked: locked,
-                  oppReady: oppReady,
-                  resolving: resolving,
-                  oppLabel: oppLabel,
-                  sending: _sending && !mineReady,
-                  color: myColors.first,
-                  onConfirm: () => _confirm(myKey, me),
-                ),
               ]);
             },
           ),
@@ -621,6 +625,7 @@ class MoveCard extends StatelessWidget {
   final bool selected;
   final bool dimmed;
   final String? disabledReason;
+  final Widget? expanded;
   final VoidCallback? onTap;
   const MoveCard({
     super.key,
@@ -628,6 +633,7 @@ class MoveCard extends StatelessWidget {
     this.selected = false,
     this.dimmed = false,
     this.disabledReason,
+    this.expanded,
     this.onTap,
   });
 
@@ -646,6 +652,7 @@ class MoveCard extends StatelessWidget {
       colors: colors,
       label: type,
       selected: selected,
+      expanded: expanded,
       dimmed: dimmed || disabledReason != null,
       onTap: onTap ?? (disabledReason != null ? () {} : null),
       child: Row(children: [
@@ -692,6 +699,7 @@ class _ActionTile extends StatelessWidget {
   final IconData icon;
   final List<Color> colors;
   final bool selected, dimmed;
+  final Widget? expanded;
   final VoidCallback? onTap;
   const _ActionTile({
     required this.title,
@@ -700,6 +708,7 @@ class _ActionTile extends StatelessWidget {
     required this.colors,
     this.selected = false,
     this.dimmed = false,
+    this.expanded,
     this.onTap,
   });
 
@@ -707,6 +716,7 @@ class _ActionTile extends StatelessWidget {
   Widget build(BuildContext context) => DropCard(
         colors: colors,
         leaf: false,
+        expanded: expanded,
         selected: selected,
         dimmed: dimmed,
         onTap: onTap,
@@ -729,22 +739,20 @@ class _ActionTile extends StatelessWidget {
       );
 }
 
-/// Pannello di conferma: dice sempre in che fase sei.
-class _ConfirmPanel extends StatelessWidget {
-  final String chosenText;
-  final bool hasChoice, locked, oppReady, resolving, sending;
+/// Sezione che si apre sotto l'opzione scelta: pulsante "Conferma" e, dopo
+/// l'invio, lo stato dell'attesa.
+class _ChoiceFooter extends StatelessWidget {
+  final bool locked, sending, resolving, oppReady;
   final String oppLabel;
-  final Color color;
+  final List<Color> colors;
   final VoidCallback onConfirm;
-  const _ConfirmPanel({
-    required this.chosenText,
-    required this.hasChoice,
+  const _ChoiceFooter({
     required this.locked,
-    required this.oppReady,
-    required this.resolving,
     required this.sending,
+    required this.resolving,
+    required this.oppReady,
     required this.oppLabel,
-    required this.color,
+    required this.colors,
     required this.onConfirm,
   });
 
@@ -752,47 +760,41 @@ class _ConfirmPanel extends StatelessWidget {
   Widget build(BuildContext context) {
     Widget body;
     if (resolving) {
-      body = Column(key: const ValueKey('res'), children: const [
-        Text('⚔️  Risoluzione del turno…', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 16)),
-        SizedBox(height: 10),
-        LinearProgressIndicator(minHeight: 6),
+      body = Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: const [
+        Text('⚔️  Risoluzione del turno…', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 14)),
+        SizedBox(height: 8),
+        LinearProgressIndicator(minHeight: 5),
       ]);
     } else if (locked) {
-      body = Column(key: const ValueKey('wait'), children: [
-        Row(mainAxisAlignment: MainAxisAlignment.center, children: [
-          const Icon(Icons.lock, size: 18, color: Pal.ok),
-          const SizedBox(width: 8),
-          Flexible(
-            child: Text(sending ? 'Invio della scelta…' : 'Scelta inviata: $chosenText',
-                style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 16, color: Pal.ok)),
-          ),
+      body = Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+        Row(children: [
+          const Icon(Icons.lock, size: 16, color: Pal.ok),
+          const SizedBox(width: 6),
+          Text(sending ? 'Invio della scelta…' : 'Scelta inviata',
+              style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 14, color: Pal.ok)),
         ]),
-        const SizedBox(height: 6),
+        const SizedBox(height: 4),
         Text(oppReady ? '$oppLabel ha scelto' : '$oppLabel sta ancora scegliendo…',
-            style: const TextStyle(color: Pal.sub, fontSize: 13)),
-        const SizedBox(height: 10),
-        const LinearProgressIndicator(minHeight: 6),
+            style: const TextStyle(color: Pal.sub, fontSize: 12)),
+        const SizedBox(height: 8),
+        const LinearProgressIndicator(minHeight: 5),
       ]);
     } else {
-      body = Column(key: const ValueKey('pick'), children: [
-        Text(hasChoice ? 'Hai selezionato: $chosenText' : "Seleziona un'azione qui sopra",
-            style: TextStyle(fontWeight: FontWeight.w800, fontSize: 16, color: hasChoice ? Pal.ink : Pal.sub)),
-        const SizedBox(height: 4),
-        Text(hasChoice ? 'Puoi ancora cambiare idea finché non confermi.' : 'Poi premi Conferma per bloccare la scelta.',
-            style: const TextStyle(color: Pal.sub, fontSize: 12)),
-        const SizedBox(height: 12),
-        DropButton(
-          label: 'Conferma scelta',
-          icon: Icons.check,
-          colors: [color, lighten(color, 0.25)],
-          onTap: hasChoice ? onConfirm : null,
-        ),
-      ]);
+      body = DropButton(
+        label: 'Conferma',
+        icon: Icons.check,
+        colors: [colors.first, lighten(colors.first, 0.25)],
+        height: 44,
+        onTap: onConfirm,
+      );
     }
-    return DropCard(
-      colors: locked ? const [Pal.ok, Color(0xFF9BDFA0)] : [color, lighten(color)],
-      margin: const EdgeInsets.only(top: 14, bottom: 6),
-      child: AnimatedSwitcher(duration: const Duration(milliseconds: 250), child: body),
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(14, 0, 14, 14),
+      child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+        const Divider(height: 1, color: Pal.line),
+        const SizedBox(height: 12),
+        body,
+      ]),
     );
   }
 }

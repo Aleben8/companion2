@@ -15,7 +15,9 @@ List<Color> typeColors(String? type) {
 class DropCard extends StatelessWidget {
   final Widget child;
   final List<Color> colors;
-  final String? label; // etichetta verticale a sinistra
+  final String? label; // etichetta della scheda
+  final bool labelOnTop; // true = etichetta in alto (orizzontale), false = a sinistra (verticale)
+  final Widget? expanded; // sezione che si apre sotto il contenuto (con animazione)
   final bool leaf; // foglia decorativa
   final bool selected; // bordo spesso + alone + spunta
   final bool dimmed; // sbiadita (non selezionabile)
@@ -31,6 +33,8 @@ class DropCard extends StatelessWidget {
     required this.child,
     this.colors = Pal.neutral,
     this.label,
+    this.labelOnTop = false,
+    this.expanded,
     this.leaf = true,
     this.selected = false,
     this.dimmed = false,
@@ -45,19 +49,32 @@ class DropCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final b = selected ? border + 2 : border;
-    final content = Padding(padding: padding, child: child);
+    final topLabel = label != null && labelOnTop;
+    final sideLabel = label != null && !labelOnTop;
+    final body = Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+      if (topLabel)
+        Padding(
+          padding: EdgeInsets.fromLTRB(padding.left, padding.top, padding.right, 0),
+          child: Align(alignment: Alignment.centerLeft, child: _TopLabel(label!, colors)),
+        ),
+      Padding(padding: topLabel ? padding.copyWith(top: 12) : padding, child: child),
+      AnimatedSize(
+        duration: const Duration(milliseconds: 220),
+        curve: Curves.easeOut,
+        alignment: Alignment.topCenter,
+        child: expanded ?? const SizedBox(width: double.infinity),
+      ),
+    ]);
     final inner = ClipRRect(
       borderRadius: BorderRadius.circular(radius - b),
       child: Container(
         color: fill ?? Colors.white,
-        child: label == null
-            ? content
-            : IntrinsicHeight(
-                child: Row(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-                  _SideLabel(label!, colors),
-                  Expanded(child: content),
-                ]),
-              ),
+        child: sideLabel
+            ? Stack(children: [
+                Padding(padding: const EdgeInsets.only(left: 36), child: body),
+                Positioned(left: 0, top: 0, bottom: 0, width: 36, child: _SideLabel(label!, colors)),
+              ])
+            : body,
       ),
     );
     final framed = Container(
@@ -94,6 +111,27 @@ class DropCard extends StatelessWidget {
     if (onTap != null) w = GestureDetector(behavior: HitTestBehavior.opaque, onTap: onTap, child: w);
     return AnimatedOpacity(opacity: dimmed ? 0.45 : 1, duration: const Duration(milliseconds: 200), child: w);
   }
+}
+
+class _TopLabel extends StatelessWidget {
+  final String text;
+  final List<Color> colors;
+  const _TopLabel(this.text, this.colors);
+
+  @override
+  Widget build(BuildContext context) => Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+        decoration: BoxDecoration(
+          gradient: LinearGradient(colors: colors),
+          borderRadius: const BorderRadius.only(
+            topLeft: Radius.circular(16),
+            bottomRight: Radius.circular(16),
+            topRight: Radius.circular(5),
+            bottomLeft: Radius.circular(5),
+          ),
+        ),
+        child: Text(text, style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w800)),
+      );
 }
 
 class _SideLabel extends StatelessWidget {
@@ -153,6 +191,7 @@ class DropButton extends StatelessWidget {
   final VoidCallback? onTap; // null = disattivato
   final bool busy;
   final bool expand;
+  final double height;
   const DropButton({
     super.key,
     required this.label,
@@ -161,13 +200,14 @@ class DropButton extends StatelessWidget {
     this.onTap,
     this.busy = false,
     this.expand = true,
+    this.height = 52,
   });
 
   @override
   Widget build(BuildContext context) {
     final on = onTap != null && !busy;
     final btn = Container(
-      height: 52,
+      height: height,
       padding: const EdgeInsets.symmetric(horizontal: 22),
       alignment: Alignment.center,
       decoration: BoxDecoration(

@@ -92,14 +92,17 @@ foglia/goccia all'angolo e pulsanti "a foglia" (angoli opposti arrotondati). Col
 componenti riutilizzabili in `lib/widgets/drop.dart` (`DropCard`, `DropButton`, `HpBar`, `EnergyDrops`, `InfoChip`, `SectionTitle`).
 Per cambiare lo stile dell'intera app basta toccare questi due file.
 
+**Etichette delle schede.** Nella home (Statistiche, Debolezze, Resistenze, Badge) l'etichetta sta in alto sopra il contenuto
+(`DropCard(labelOnTop: true)`); nelle altre schermate resta verticale a sinistra (`labelOnTop: false`, il valore predefinito).
+
 **Battaglia: come si capisce chi ha cliccato.** Ogni turno ha tre fasi sempre visibili:
-1. *Scegli*: tocchi un'azione (mossa, Difesa, Schiva, Pozione); si evidenzia con bordo spesso, alone e spunta, le altre restano normali.
-   Un secondo tocco la deseleziona. Non succede nulla finché non premi **Conferma scelta**.
-2. *Attesa*: dopo la conferma le opzioni si bloccano (sbiadite, resta evidenziata la tua), compare "Scelta inviata" e due indicatori
-   in alto mostrano se hai scelto tu e se ha scelto l'avversario.
-3. *Risoluzione*: quando entrambi sono pronti compare "Risoluzione del turno…", poi il resoconto del turno e le barre PS si animano.
-Le mosse senza energia sono sbiadite con il motivo scritto. Energia e PS sono sempre visibili (energia a gocce).
-Caramella Rara e Fune di fuga restano a uso immediato, in una sezione a parte.
+1. *Scegli*: tocchi un'azione (mossa, Difesa, Schiva, Pozione). La scheda si evidenzia (bordo spesso, alone, spunta) e **sotto di
+   essa si apre una piccola sezione con il pulsante "Conferma"**. Un secondo tocco sulla scheda la deseleziona. Non succede nulla
+   finché non premi Conferma.
+2. *Attesa*: dopo la conferma le altre opzioni si sbiadiscono, la tua resta evidenziata e la sezione sotto mostra "Scelta inviata"
+   e se l'avversario ha già scelto. In alto due indicatori mostrano chi ha scelto.
+3. *Risoluzione*: quando entrambi sono pronti compare "Risoluzione del turno…", poi il resoconto e le barre PS si animano.
+Le mosse senza energia sono sbiadite con il motivo scritto. Caramella Rara e Fune di fuga restano a uso immediato.
 
 ## Strumenti (zaino)
 

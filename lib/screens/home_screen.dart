@@ -273,6 +273,7 @@ class _StatsPanel extends StatelessWidget {
     return DropCard(
       colors: cs,
       label: title,
+      labelOnTop: true,
       child: l.isEmpty
           ? const Text('Nessuna', style: TextStyle(color: Pal.sub))
           : Wrap(spacing: 8, runSpacing: 8, children: [
@@ -301,6 +302,7 @@ class _StatsPanel extends StatelessWidget {
       DropCard(
         colors: c,
         label: 'Statistiche',
+        labelOnTop: true,
         child: Column(children: [
           for (final e in kStatLabels.entries) ...[
             Row(children: [
@@ -317,7 +319,7 @@ class _StatsPanel extends StatelessWidget {
       ),
       _types('Debolezze', pk['Debolezze'], const [Pal.bad, Color(0xFFF3A0A0)]),
       _types('Resistenze', pk['Resistenze'], const [Pal.ok, Color(0xFF9BDFA0)]),
-      DropCard(colors: Pal.gold, label: 'Badge', child: const BadgeRow()),
+      DropCard(colors: Pal.gold, label: 'Badge', labelOnTop: true, child: const BadgeRow()),
     ]);
   }
 }
