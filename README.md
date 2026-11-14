@@ -103,11 +103,17 @@ Per cambiare lo stile dell'intera app basta toccare questi due file.
    e se l'avversario ha già scelto. In alto due indicatori mostrano chi ha scelto.
 3. *Risoluzione*: quando entrambi sono pronti compare "Risoluzione del turno…", poi il resoconto e le barre PS si animano.
 Le mosse senza energia sono sbiadite con il motivo scritto. Caramella Rara e Fune di fuga restano a uso immediato.
+La selezione non sposta le schede: il bordo ha spessore fisso e l'evidenziazione è un anello esterno (ombra), che non occupa spazio.
+
+**Energia.** Ogni punto di energia è il glifo angolare `assets/images/energy_full.png` (pieno) o `energy_empty.png` (vuoto),
+tinto del colore del tipo. Per cambiarlo basta sostituire quei due PNG (sfondo trasparente, forma nera); il widget è `EnergyPips` in `widgets/drop.dart`.
+
+**Home.** Cinque pulsanti: Statistiche, Party, Battaglia, Borsa, Mappa.
 
 ## Strumenti (zaino)
 
 Ogni giocatore parte con **tutti e 8 gli strumenti, 1 copia ciascuno** (`kStartingInventory` in `lib/items.dart`).
-Gli utenti già esistenti ricevono la dotazione al primo accesso. Lo zaino si apre dall'icona in alto nella home.
+Gli utenti già esistenti ricevono la dotazione al primo accesso. La borsa è il tab **Borsa** della home.
 Tutte le durate e i valori sono costanti in `lib/items.dart`.
 
 | Strumento | Dove si usa | Effetto nella app |
@@ -146,7 +152,7 @@ in lettura/scrittura per gli utenti del gioco, altrimenti vedrai errori di perme
 ## Palestre e capipalestra
 
 Sei palestre (`kGyms` in `lib/gyms.dart`): Biblioteca (Normale), Giardini Estensi (Erba), Piazza Montegrappa (Acqua),
-Piazza della Motta (Fuoco), Battistero (Volante), Tribunale (Roccia). Si aprono dall'icona mappa nella home.
+Piazza della Motta (Fuoco), Battistero (Volante), Tribunale (Roccia). Si trovano nel tab **Mappa** della home.
 
 **Avvio del gioco.** Chi ha il ruolo di Master (`isMaster: true` sul suo documento in `Party/{codice}/players/`) vede nella
 schermata Palestre la sezione "Avvio e calibrazione" e preme **Avvia il gioco**: per ogni palestra viene creato un capopalestra

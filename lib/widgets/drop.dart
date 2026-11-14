@@ -48,7 +48,7 @@ class DropCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final b = selected ? border + 2 : border;
+    final b = border; // costante: la selezione NON deve cambiare le dimensioni
     final topLabel = label != null && labelOnTop;
     final sideLabel = label != null && !labelOnTop;
     final body = Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch, children: [
@@ -68,7 +68,7 @@ class DropCard extends StatelessWidget {
     final inner = ClipRRect(
       borderRadius: BorderRadius.circular(radius - b),
       child: Container(
-        color: fill ?? Colors.white,
+        color: fill ?? (selected ? lighten(colors.first, 0.92) : Colors.white),
         child: sideLabel
             ? Stack(children: [
                 Padding(padding: const EdgeInsets.only(left: 36), child: body),
@@ -82,8 +82,12 @@ class DropCard extends StatelessWidget {
       decoration: BoxDecoration(
         gradient: LinearGradient(colors: colors, begin: Alignment.topLeft, end: Alignment.bottomRight),
         borderRadius: BorderRadius.circular(radius),
+        // L'anello e l'alone sono ombre: non occupano spazio, quindi la scheda non si sposta.
         boxShadow: selected
-            ? [BoxShadow(color: colors.first.withOpacity(0.45), blurRadius: 18, spreadRadius: 1)]
+            ? [
+                BoxShadow(color: colors.first, spreadRadius: 2.5),
+                BoxShadow(color: colors.first.withOpacity(0.40), blurRadius: 18, spreadRadius: 4),
+              ]
             : [BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 10, offset: const Offset(0, 4))],
       ),
       child: inner,
@@ -257,12 +261,16 @@ class SectionTitle extends StatelessWidget {
 class InfoChip extends StatelessWidget {
   final String text;
   final Color color;
-  const InfoChip(this.text, {super.key, this.color = Pal.accent});
+  final Widget? leading;
+  const InfoChip(this.text, {super.key, this.color = Pal.accent, this.leading});
   @override
   Widget build(BuildContext context) => Container(
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
         decoration: BoxDecoration(color: color.withOpacity(0.12), borderRadius: BorderRadius.circular(12)),
-        child: Text(text, style: TextStyle(color: color, fontSize: 12, fontWeight: FontWeight.w700)),
+        child: Row(mainAxisSize: MainAxisSize.min, children: [
+          if (leading != null) ...[leading!, const SizedBox(width: 5)],
+          Text(text, style: TextStyle(color: color, fontSize: 12, fontWeight: FontWeight.w700)),
+        ]),
       );
 }
 
@@ -297,21 +305,45 @@ class HpBar extends StatelessWidget {
   }
 }
 
-/// Energia come gocce piene/vuote.
-class EnergyDrops extends StatelessWidget {
+/// Simbolo dell'energia (glifo angolare), tinto del colore richiesto.
+class EnergyGlyph extends StatelessWidget {
+  final double height;
+  final Color color;
+  final bool full;
+  const EnergyGlyph({super.key, this.height = 24, required this.color, this.full = true});
+
+  @override
+  Widget build(BuildContext context) => Image.asset(
+        full ? 'assets/images/energy_full.png' : 'assets/images/energy_empty.png',
+        height: height,
+        color: color,
+        colorBlendMode: BlendMode.srcIn,
+        errorBuilder: (_, __, ___) => Icon(Icons.bolt, size: height, color: color),
+      );
+}
+
+/// Barra dell'energia: un glifo per ogni punto, pieno o vuoto.
+class EnergyPips extends StatelessWidget {
   final int current;
   final int max;
   final Color color;
-  const EnergyDrops({super.key, required this.current, required this.max, required this.color});
+  const EnergyPips({super.key, required this.current, required this.max, required this.color});
 
   @override
   Widget build(BuildContext context) => Wrap(
-        spacing: 1,
-        runSpacing: 1,
+        spacing: 3,
+        runSpacing: 4,
         children: [
           for (var i = 0; i < max; i++)
-            Icon(i < current ? Icons.water_drop : Icons.water_drop_outlined,
-                size: 15, color: i < current ? color : Pal.line),
+            AnimatedSwitcher(
+              duration: const Duration(milliseconds: 250),
+              child: EnergyGlyph(
+                key: ValueKey(i < current),
+                height: 24,
+                color: i < current ? color : Pal.line,
+                full: i < current,
+              ),
+            ),
         ],
       );
 }

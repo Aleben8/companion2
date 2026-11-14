@@ -603,7 +603,7 @@ class Combatant extends StatelessWidget {
             Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
               Text('$en', style: TextStyle(fontWeight: FontWeight.w800, color: colors.first)),
               const SizedBox(width: 6),
-              Expanded(child: EnergyDrops(current: en, max: maxEn, color: colors.first)),
+              Expanded(child: EnergyPips(current: en, max: maxEn, color: colors.first)),
             ]),
             if (stato != null || player['candy'] == true) ...[
               const SizedBox(height: 8),
@@ -666,7 +666,7 @@ class MoveCard extends StatelessWidget {
             Wrap(spacing: 6, runSpacing: 6, children: [
               InfoChip('Danno $dmg', color: colors.first),
               InfoChip(speciale ? 'Speciale' : 'Fisico', color: Pal.sub),
-              InfoChip('💧 $cost', color: colors.first),
+              InfoChip('$cost', color: colors.first, leading: EnergyGlyph(height: 14, color: colors.first)),
             ]),
             if (effect != null) ...[
               const SizedBox(height: 6),

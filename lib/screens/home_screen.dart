@@ -14,7 +14,7 @@ import 'inventory_screen.dart';
 import 'party_tab.dart';
 import 'settings_screen.dart';
 
-enum HomeTab { stats, party, battle }
+enum HomeTab { stats, party, battle, bag, map }
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -41,24 +41,6 @@ class _HomeScreenState extends State<HomeScreen> {
         title: const Text('Companion', style: TextStyle(fontWeight: FontWeight.w800)),
         actions: [
           IconButton(
-            tooltip: 'Palestre',
-            icon: const Icon(Icons.map_outlined),
-            onPressed: () async {
-              final id = await Navigator.of(context).push<String>(MaterialPageRoute(builder: (_) => const GymsScreen()));
-              if (id != null && mounted) {
-                setState(() {
-                  _openBattleId = id;
-                  _tab = HomeTab.battle;
-                });
-              }
-            },
-          ),
-          IconButton(
-            tooltip: 'Zaino',
-            icon: const Icon(Icons.inventory_2_outlined),
-            onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const InventoryScreen())),
-          ),
-          IconButton(
             tooltip: 'Impostazioni',
             icon: const Icon(Icons.settings_outlined),
             onPressed: () async {
@@ -84,6 +66,13 @@ class _HomeScreenState extends State<HomeScreen> {
                 HomeTab.stats => _StatsPanel(pk: pk, color: color),
                 HomeTab.party => const PartyTab(),
                 HomeTab.battle => BattleTab(key: ValueKey(_openBattleId), initialBattleId: _openBattleId),
+                HomeTab.bag => const InventoryTab(),
+                HomeTab.map => GymsTab(
+                    onBattle: (id) => setState(() {
+                      _openBattleId = id;
+                      _tab = HomeTab.battle;
+                    }),
+                  ),
               },
             ]),
           ),
@@ -183,33 +172,42 @@ class _Tabs extends StatelessWidget {
   final ValueChanged<HomeTab> onTab;
   const _Tabs({required this.color, required this.tab, required this.onTab});
 
-  Widget _btn(HomeTab t, String label, String asset) {
+  /// [asset] per le icone dell'originale, [icon] per quelle Material.
+  Widget _btn(HomeTab t, String label, {String? asset, IconData? icon}) {
     final sel = tab == t;
+    final fg = sel ? Colors.white : Pal.ink;
     return Expanded(
       child: GestureDetector(
         onTap: () => onTab(t),
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 220),
-          margin: const EdgeInsets.symmetric(horizontal: 5, vertical: 8),
+          margin: const EdgeInsets.symmetric(horizontal: 3, vertical: 8),
           height: 68,
           decoration: BoxDecoration(
             gradient: sel ? LinearGradient(colors: [color, lighten(color, 0.3)]) : null,
             color: sel ? null : Colors.white,
             border: sel ? null : Border.all(color: Pal.line, width: 2),
             borderRadius: const BorderRadius.only(
-              topLeft: Radius.circular(24),
-              bottomRight: Radius.circular(24),
+              topLeft: Radius.circular(22),
+              bottomRight: Radius.circular(22),
               topRight: Radius.circular(8),
               bottomLeft: Radius.circular(8),
             ),
             boxShadow: sel ? [BoxShadow(color: color.withOpacity(0.35), blurRadius: 12, offset: const Offset(0, 5))] : null,
           ),
           child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-            Image.asset(asset,
-                width: 26, height: 26, color: sel ? Colors.white : Pal.ink, errorBuilder: (_, __, ___) => const Icon(Icons.circle)),
+            if (asset != null)
+              Image.asset(asset, width: 24, height: 24, color: fg, errorBuilder: (_, __, ___) => const Icon(Icons.circle))
+            else
+              Icon(icon, size: 24, color: fg),
             const SizedBox(height: 4),
-            Text(label,
-                style: TextStyle(fontSize: 11, fontWeight: FontWeight.w800, color: sel ? Colors.white : Pal.ink)),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 2),
+              child: FittedBox(
+                fit: BoxFit.scaleDown,
+                child: Text(label, style: TextStyle(fontSize: 10.5, fontWeight: FontWeight.w800, color: fg)),
+              ),
+            ),
           ]),
         ),
       ),
@@ -218,9 +216,11 @@ class _Tabs extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Row(children: [
-        _btn(HomeTab.stats, 'Statistiche', 'assets/images/stats.png'),
-        _btn(HomeTab.party, 'Party', 'assets/images/party.png'),
-        _btn(HomeTab.battle, 'Battaglia', 'assets/images/battle.png'),
+        _btn(HomeTab.stats, 'Statistiche', asset: 'assets/images/stats.png'),
+        _btn(HomeTab.party, 'Party', asset: 'assets/images/party.png'),
+        _btn(HomeTab.battle, 'Battaglia', asset: 'assets/images/battle.png'),
+        _btn(HomeTab.bag, 'Borsa', icon: Icons.backpack_outlined),
+        _btn(HomeTab.map, 'Mappa', icon: Icons.map_outlined),
       ]);
 }
 

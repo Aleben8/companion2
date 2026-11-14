@@ -16,16 +16,18 @@ import '../services/party_service.dart';
 import '../services/session.dart';
 import '../theme.dart';
 import '../widgets/common.dart';
+import '../widgets/drop.dart';
 
-/// Mappa e lista delle palestre. Restituisce (con Navigator.pop) l'id della
-/// battaglia se il giocatore sfida un capopalestra.
-class GymsScreen extends StatefulWidget {
-  const GymsScreen({super.key});
+/// Mappa e lista delle palestre (tab della home). Se il giocatore sfida un
+/// capopalestra chiama [onBattle] con l'id della battaglia appena creata.
+class GymsTab extends StatefulWidget {
+  final ValueChanged<String> onBattle;
+  const GymsTab({super.key, required this.onBattle});
   @override
-  State<GymsScreen> createState() => _GymsScreenState();
+  State<GymsTab> createState() => _GymsTabState();
 }
 
-class _GymsScreenState extends State<GymsScreen> {
+class _GymsTabState extends State<GymsTab> {
   String? _party;
   bool _master = false;
   bool _loading = true;
@@ -101,7 +103,7 @@ class _GymsScreenState extends State<GymsScreen> {
           uid: _s.userName!,
           pk: _s.pokemonId!,
         );
-        if (mounted) Navigator.of(context).pop(id);
+        if (mounted) widget.onBattle(id);
       });
 
   // ------------------------------------------------------------------ UI
@@ -288,51 +290,50 @@ class _GymsScreenState extends State<GymsScreen> {
   @override
   Widget build(BuildContext context) {
     final pos = context.watch<LocationService>().position;
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Palestre'),
-      ),
-      body: _loading
-          ? const Center(child: CircularProgressIndicator())
-          : _party == null
-              ? const Center(child: Text('Entra prima in un party', style: TextStyle(color: Pal.sub)))
-              : StreamBuilder<Map<String, dynamic>?>(
-                  stream: ItemService.watchUser(_s.userName!),
-                  builder: (context, userSnap) {
-                    final raw = userSnap.data?['badges'];
-                    final badges = raw is Map ? raw : const {};
-                    return StreamBuilder<bool>(
-                      stream: GymService.watchStarted(_party!),
-                      builder: (context, startedSnap) {
-                        final started = startedSnap.data == true;
-                        return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-                          stream: GymService.watchGyms(_party!),
-                          builder: (context, snap) {
-                            final docs = snap.data?.docs ?? [];
-                            return ListView(
-                              padding: const EdgeInsets.all(16),
-                              children: [
-                                _map(docs, pos, badges),
-                                const SizedBox(height: 16),
-                                if (_master) _masterTools(started, docs),
-                                if (!started)
-                                  const Padding(
-                                    padding: EdgeInsets.all(20),
-                                    child: Text(
-                                      'Il gioco non è ancora stato avviato: i capipalestra compariranno quando verrà lanciato.',
-                                      textAlign: TextAlign.center,
-                                      style: TextStyle(color: Pal.sub),
-                                    ),
-                                  ),
-                                for (final d in docs) _gymCard(d, pos, badges),
-                              ],
-                            );
-                          },
-                        );
-                      },
-                    );
-                  },
-                ),
+    if (_loading) {
+      return const Padding(padding: EdgeInsets.all(40), child: Center(child: CircularProgressIndicator()));
+    }
+    if (_party == null) {
+      return const Padding(
+        padding: EdgeInsets.all(30),
+        child: Center(child: Text('Entra prima in un party', style: TextStyle(color: Pal.sub))),
+      );
+    }
+    return StreamBuilder<Map<String, dynamic>?>(
+      stream: ItemService.watchUser(_s.userName!),
+      builder: (context, userSnap) {
+        final raw = userSnap.data?['badges'];
+        final badges = raw is Map ? raw : const {};
+        return StreamBuilder<bool>(
+          stream: GymService.watchStarted(_party!),
+          builder: (context, startedSnap) {
+            final started = startedSnap.data == true;
+            return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+              stream: GymService.watchGyms(_party!),
+              builder: (context, snap) {
+                final docs = snap.data?.docs ?? [];
+                return Column(children: [
+                  const SectionTitle('Mappa'),
+                  const SizedBox(height: 6),
+                  _map(docs, pos, badges),
+                  const SizedBox(height: 16),
+                  if (_master) _masterTools(started, docs),
+                  if (!started)
+                    const Padding(
+                      padding: EdgeInsets.all(20),
+                      child: Text(
+                        'Il gioco non è ancora stato avviato: i capipalestra compariranno quando verrà lanciato.',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(color: Pal.sub),
+                      ),
+                    ),
+                  for (final d in docs) _gymCard(d, pos, badges),
+                ]);
+              },
+            );
+          },
+        );
+      },
     );
   }
 }

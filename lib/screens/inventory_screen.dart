@@ -10,16 +10,16 @@ import '../services/party_service.dart';
 import '../services/session.dart';
 import '../theme.dart';
 import '../widgets/common.dart';
-import '../widgets/game_status.dart';
+import '../widgets/drop.dart';
 
-/// Zaino: elenco degli strumenti con quantità e pulsante "Usa".
-class InventoryScreen extends StatefulWidget {
-  const InventoryScreen({super.key});
+/// Borsa: elenco degli strumenti con quantità e pulsante "Usa" (tab della home).
+class InventoryTab extends StatefulWidget {
+  const InventoryTab({super.key});
   @override
-  State<InventoryScreen> createState() => _InventoryScreenState();
+  State<InventoryTab> createState() => _InventoryTabState();
 }
 
-class _InventoryScreenState extends State<InventoryScreen> {
+class _InventoryTabState extends State<InventoryTab> {
   bool _busy = false;
 
   String get _uid => context.read<Session>().userName!;
@@ -120,27 +120,19 @@ class _InventoryScreenState extends State<InventoryScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Zaino'),
-      ),
-      body: StreamBuilder<Map<String, dynamic>?>(
-        stream: ItemService.watchUser(_uid),
-        builder: (context, snap) {
-          if (!snap.hasData && snap.connectionState == ConnectionState.waiting) {
-            return const Center(child: CircularProgressIndicator());
-          }
-          final inv = ItemService.readInventory(snap.data);
-          return ListView(
-            padding: const EdgeInsets.all(16),
-            children: [
-              const StatusBanner(),
-              const SizedBox(height: 12),
-              for (final item in kItems) ItemCard(item: item, qty: inv[item.key] ?? 0, onUse: () => _use(item)),
-            ],
-          );
-        },
-      ),
+    return StreamBuilder<Map<String, dynamic>?>(
+      stream: ItemService.watchUser(_uid),
+      builder: (context, snap) {
+        if (!snap.hasData && snap.connectionState == ConnectionState.waiting) {
+          return const Padding(padding: EdgeInsets.all(40), child: Center(child: CircularProgressIndicator()));
+        }
+        final inv = ItemService.readInventory(snap.data);
+        return Column(children: [
+          const SectionTitle('Borsa'),
+          const SizedBox(height: 6),
+          for (final item in kItems) ItemCard(item: item, qty: inv[item.key] ?? 0, onUse: () => _use(item)),
+        ]);
+      },
     );
   }
 }
