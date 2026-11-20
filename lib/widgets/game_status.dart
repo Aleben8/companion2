@@ -7,6 +7,8 @@ import 'package:provider/provider.dart';
 import '../constants.dart';
 import '../geo.dart';
 import '../items.dart';
+import '../mode.dart';
+import '../table/zones.dart';
 import '../services/item_service.dart';
 import '../services/location_service.dart';
 import '../services/party_service.dart';
@@ -47,11 +49,11 @@ class _CountdownState extends State<Countdown> {
 }
 
 /// Effetti attivi: Repellente, Pokémon esausto, bloccato in una Trappola.
+/// Dal vivo mostra un conto alla rovescia, al tavolo i giri rimasti.
 class StatusBanner extends StatelessWidget {
   const StatusBanner({super.key});
 
-  Widget _chip(BuildContext context, IconData icon, Color color, String label, DateTime until,
-      {Widget? action}) {
+  Widget _chip(IconData icon, Color color, String label, Widget trailing, {Widget? action}) {
     return Container(
       margin: const EdgeInsets.only(top: 10),
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
@@ -64,10 +66,18 @@ class StatusBanner extends StatelessWidget {
         Icon(icon, color: color),
         const SizedBox(width: 10),
         Expanded(child: Text(label, style: const TextStyle(color: Pal.ink, fontSize: 15, fontWeight: FontWeight.w600))),
-        Countdown(until, style: TextStyle(color: color, fontSize: 18, fontWeight: FontWeight.bold)),
+        trailing,
         if (action != null) ...[const SizedBox(width: 8), action],
       ]),
     );
+  }
+
+  /// Timestamp -> conto alla rovescia; numero -> "N giri".
+  Widget _time(dynamic v, Color c) {
+    final st = TextStyle(color: c, fontSize: 16, fontWeight: FontWeight.bold);
+    if (v is Timestamp) return Countdown(v.toDate(), style: st);
+    final left = (v as num).toInt() - TableClock.round + 1;
+    return Text(left == 1 ? '1 giro' : '$left giri', style: st);
   }
 
   @override
@@ -78,33 +88,40 @@ class StatusBanner extends StatelessWidget {
       builder: (context, snap) {
         final u = snap.data;
         if (u == null) return const SizedBox.shrink();
-        DateTime? t(String k) => u[k] is Timestamp ? (u[k] as Timestamp).toDate() : null;
-        final rep = t('repellentUntil');
-        final ko = t('koUntil');
-        final trap = t('trappedUntil');
-        final now = DateTime.now();
+        final rep = u['repellentUntil'];
+        final ko = u['koUntil'];
+        final trapUntil = u['trappedUntil'];
+        final skip = ((u['trappedSkip'] as num?) ?? 0).toInt();
+
+        Future<void> useRope() async {
+          try {
+            await ItemService.useRopeOnTrap(uid);
+            if (context.mounted) snack(context, 'Sei fuggito dalla trappola!');
+          } catch (e) {
+            if (context.mounted) snack(context, '$e'.replaceFirst('Exception: ', ''), error: true);
+          }
+        }
+
+        final rope = TextButton(
+          style: TextButton.styleFrom(foregroundColor: Colors.white, backgroundColor: const Color(0xFFB5694F)),
+          onPressed: useRope,
+          child: const Text('Fune di fuga'),
+        );
+
         return Column(children: [
-          if (rep != null && rep.isAfter(now))
-            _chip(context, Icons.shield_moon, const Color(0xFF8CD0A8),
-                'Repellente attivo: sei nascosto e non puoi combattere', rep),
-          if (ko != null && ko.isAfter(now))
-            _chip(context, Icons.healing, const Color(0xFF6CA8F0),
-                'Pokémon esausto: in recupero', ko),
-          if (trap != null && trap.isAfter(now))
-            _chip(context, Icons.warning_amber_rounded, const Color(0xFFF2A74B),
-                'Sei in una Trappola!', trap,
-                action: TextButton(
-                  style: TextButton.styleFrom(foregroundColor: Colors.white, backgroundColor: const Color(0xFFB5694F)),
-                  onPressed: () async {
-                    try {
-                      await ItemService.useRopeOnTrap(uid);
-                      if (context.mounted) snack(context, 'Sei fuggito dalla trappola!');
-                    } catch (e) {
-                      if (context.mounted) snack(context, '$e'.replaceFirst('Exception: ', ''), error: true);
-                    }
-                  },
-                  child: const Text('Fune di fuga'),
-                )),
+          if (ItemService.isActive(rep))
+            _chip(Icons.shield_moon, const Color(0xFF8CD0A8),
+                'Repellente attivo: sei nascosto e non puoi combattere', _time(rep, const Color(0xFF3F9F72))),
+          if (ItemService.isActive(ko))
+            _chip(Icons.healing, const Color(0xFF6CA8F0), 'Pokémon esausto: in recupero', _time(ko, const Color(0xFF2F7FD0))),
+          if (skip > 0)
+            _chip(Icons.warning_amber_rounded, const Color(0xFFF2A74B),
+                'Sei in una Trappola: salterai il prossimo turno', const SizedBox.shrink(),
+                action: rope),
+          if (!kTableMode && ItemService.isActive(trapUntil))
+            _chip(Icons.warning_amber_rounded, const Color(0xFFF2A74B), 'Sei in una Trappola!',
+                _time(trapUntil, const Color(0xFFC77D1A)),
+                action: rope),
         ]);
       },
     );
@@ -131,7 +148,7 @@ class _GameWatcherState extends State<GameWatcher> {
   void initState() {
     super.initState();
     _uid = context.read<Session>().userName!;
-    context.read<LocationService>().start(_uid);
+    if (!kTableMode) context.read<LocationService>().start(_uid);
     _userSub = ItemService.watchUser(_uid).listen((u) {
       final p = u?['actualParty'];
       final party = p is String && p.isNotEmpty ? p : null;
@@ -145,7 +162,7 @@ class _GameWatcherState extends State<GameWatcher> {
     _party = party;
     _traps = [];
     if (party == null) return;
-    _trapSub = PartyService.party(party)
+    if (!kTableMode) _trapSub = PartyService.party(party)
         .collection('traps')
         .where('active', isEqualTo: true)
         .snapshots()
@@ -174,7 +191,9 @@ class _GameWatcherState extends State<GameWatcher> {
       if (DateTime.now().difference(at).inSeconds > 60) continue;
       final pos = context.read<LocationService>().position;
       var where = '';
-      if (pos != null) {
+      if (data['zone'] != null) {
+        where = ' — in ${zoneSpec('${data['zone']}').name}, settore ${data['sector']}';
+      } else if (pos != null) {
         final lat = (data['lat'] as num).toDouble();
         final lng = (data['lng'] as num).toDouble();
         where =

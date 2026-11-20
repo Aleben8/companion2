@@ -4,6 +4,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 
 import '../constants.dart';
 import '../gyms.dart';
+import '../table/events.dart';
 import 'item_service.dart';
 import 'party_service.dart';
 
@@ -78,15 +79,16 @@ class GymService {
   }
 
   /// Crea un capopalestra casuale ma coerente con il tipo.
-  static Future<Map<String, dynamic>> generateLeader(String type) async {
-    final profile = kTypeProfiles[type]!;
-    final pokemon = _pick(profile.pokemon);
-    final trainer = _pick(profile.trainers);
-    final stats = _randomStats(profile.statWeights, kGymStatPoints);
+  /// [legendary]: più forte (kLegendaryStatPoints), mosse più potenti e nessun allenatore.
+  static Future<Map<String, dynamic>> generateLeader(String type, {bool legendary = false, String? pokemon}) async {
+    final profile = kTypeProfiles[type] ?? kTypeProfiles['Normale']!;
+    final pokemonName = pokemon ?? _pick(profile.pokemon);
+    final String? trainer = legendary ? null : _pick(profile.trainers);
+    final stats = _randomStats(profile.statWeights, legendary ? kLegendaryStatPoints : kGymStatPoints);
 
     // Due mosse: una leggera (Dmg 1-3) e una forte (Dmg 3-5), diverse tra loro.
     final templates = [...profile.moves]..shuffle(_rnd);
-    final dmgs = [1 + _rnd.nextInt(3), 3 + _rnd.nextInt(3)]..shuffle(_rnd);
+    final dmgs = (legendary ? [2 + _rnd.nextInt(3), 4 + _rnd.nextInt(3)] : [1 + _rnd.nextInt(3), 3 + _rnd.nextInt(3)])..shuffle(_rnd);
     final moves = <String, dynamic>{};
     for (var i = 0; i < 2; i++) {
       final m = _buildMove(type, templates[i], dmgs[i], _pick(profile.effects));
@@ -108,7 +110,7 @@ class GymService {
 
     return {
       'trainer': trainer,
-      'pokemon': pokemon,
+      'pokemon': pokemonName,
       'typePrim': type,
       'typeSec': '',
       ...stats,

@@ -20,6 +20,45 @@ flutter run -d chrome    # prova in locale
 Se hai già un progetto con `android/` e `ios/` generati, copia sopra `lib/`, `assets/`, `web/`, `.github/`,
 `pubspec.yaml` e `analysis_options.yaml`, poi `flutter pub get`.
 
+## Due modalità: Tavolo (predefinita) e Dal vivo
+
+Un'unica base di codice, due versioni scelte in compilazione:
+
+```bash
+flutter run -d chrome                                  # TAVOLO
+flutter run -d chrome --dart-define=MODE=live          # DAL VIVO (GPS)
+flutter build web --release --base-href /companion2/   # build Tavolo (quella del deploy.yml)
+```
+
+### Firestore (uno solo)
+Entrambe le modalità usano lo stesso progetto Firebase (`lib/firebase_options.dart`), quindi non c'è nulla da configurare.
+- Per non mescolare i dati usa un **codice party diverso** per il tavolo (per esempio `TAVOLO1`) e uno per il gioco dal vivo (`SecretBB`).
+  I dati della partita stanno tutti sotto `Party/{codice}/...`, quindi i due giochi restano separati.
+- I giocatori (`Users/...`) e le loro mosse sono in comune. Il tavolo aggiunge ai giocatori i campi `pos`, `trappedSkip` e `actionPenalty`.
+  All'avvio di una partita gli effetti temporanei vengono azzerati.
+- Chi avvia la partita ha `isMaster: true` in `Party/{codice}/players/{nome}` (si imposta dalla console). Poi gioca come tutti.
+- La collezione `Tipi` esiste già; se mancasse, la app la crea all'avvio della partita.
+
+### Come funziona il tavolo
+- **Turni.** All'avvio l'ordine è casuale. Ogni turno dà **2 azioni con un numero DISPARI di giocatori, 3 con un numero PARI**
+  (`kActionsOdd`/`kActionsEven` in `lib/mode.dart`). Chi gioca usa "Ho usato un'azione" per le azioni fatte al tavolo e
+  "Fine turno" per passare. Quando tutti hanno giocato il **giro** avanza. La barra in alto mostra giro, chi gioca e le azioni rimaste.
+- **Posizione.** Dopo aver mosso la pedina sul tabellone, il giocatore tocca zona e settore nella tab **Tavolo**. Ogni spostamento
+  costa 1 azione (`kMoveActionCost`). Le posizioni sono private: le altre si scoprono con il Radar.
+  Zone e numero di settori sono in `lib/table/zones.dart` (**modificali in base alla tua mappa**: ora ogni zona ha 4 settori).
+- **Minuti -> giri.** Repellente 2 giri, recupero dopo la sconfitta 1 giro, divieto di riaffrontarsi dopo una fuga 2 giri,
+  Trappola = si salta il turno successivo (valori in `lib/items.dart`).
+- **Strumenti.** Radar mostra zona e settore degli altri, Calmanella rivela la tua zona, Trappola si piazza nel tuo settore e scatta
+  quando qualcuno ci entra, Fune di fuga la annulla.
+- **Eventi di zona** (`lib/table/events.dart`). All'avvio ne vengono estratti 5 più un leggendario e sono pianificati dal giro 3, uno ogni
+  2 giri, in ordine casuale. Ogni evento è **annunciato un giro prima**, poi è **in corso** per qualche giro e infine termina. La app dice
+  cosa mettere sul tabellone. Effetti: Vulcano (entrata +1 azione, Fuoco +1 danno, chi è lì perde 1 azione), Canyon (2 settori bloccati),
+  Giungla (nebbia: invisibili al Radar), Regione innevata (entrata +1 azione), Isola (2 settori sommersi), Colline (Elettro +2, Volante +1),
+  Hub e Campi (una volta sola si prende uno strumento a caso). **Il leggendario** compare in una zona a caso con un Pokémon più forte
+  dei capi: il primo che lo batte vince 2 strumenti.
+- **Battaglie.** Funzionano come prima (codice da condividere). Gli eventi attivi nella zona di chi crea la battaglia danno il bonus di danno.
+- Le palestre GPS di Varese esistono solo nella modalità dal vivo.
+
 ## Pubblicazione su GitHub Pages (come l'originale)
 
 Il file `.github/workflows/deploy.yml` è già incluso: a ogni `git push` su `main` GitHub ricompila e pubblica il sito
@@ -61,6 +100,10 @@ lib/
   items.dart                      definizione e regole degli strumenti
   gyms.dart                       palestre, profili dei tipi, parametri
   widgets/badge_row.dart          badge delle palestre
+  mode.dart                       modalità (tavolo/live) e regole del tavolo
+  table/                          zone, eventi di zona, tabella dei tipi
+  services/table_service.dart     turni, spostamenti, eventi, leggendario
+  screens/table_tab.dart          tab Tavolo, barra dei turni, osservatore
   geo.dart                        distanza e direzione
 assets/images/...                 sprite e icone originali
 ```

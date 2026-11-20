@@ -1,0 +1,43 @@
+/// Tabella dei tipi (debolezze e resistenze del DIFENSORE).
+/// Serve a riempire la collezione `Tipi` in un Firestore nuovo e come riserva.
+const Map<String, List<String>> kTypeWeak = {
+  'Normale': ['Lotta'],
+  'Fuoco': ['Acqua', 'Terra', 'Roccia'],
+  'Acqua': ['Elettro', 'Erba'],
+  'Elettro': ['Terra'],
+  'Erba': ['Fuoco', 'Ghiaccio', 'Veleno', 'Volante', 'Coleottero'],
+  'Ghiaccio': ['Fuoco', 'Lotta', 'Roccia', 'Acciaio'],
+  'Lotta': ['Volante', 'Psico', 'Folletto'],
+  'Veleno': ['Terra', 'Psico'],
+  'Terra': ['Acqua', 'Erba', 'Ghiaccio'],
+  'Volante': ['Elettro', 'Ghiaccio', 'Roccia'],
+  'Psico': ['Coleottero', 'Spettro', 'Buio'],
+  'Coleottero': ['Fuoco', 'Volante', 'Roccia'],
+  'Roccia': ['Acqua', 'Erba', 'Lotta', 'Terra', 'Acciaio'],
+  'Spettro': ['Spettro', 'Buio'],
+  'Drago': ['Ghiaccio', 'Drago', 'Folletto'],
+  'Buio': ['Lotta', 'Coleottero', 'Folletto'],
+  'Acciaio': ['Fuoco', 'Lotta', 'Terra'],
+  'Folletto': ['Veleno', 'Acciaio'],
+};
+
+const Map<String, List<String>> kTypeResist = {
+  'Normale': [],
+  'Fuoco': ['Fuoco', 'Erba', 'Ghiaccio', 'Coleottero', 'Acciaio', 'Folletto'],
+  'Acqua': ['Fuoco', 'Acqua', 'Ghiaccio', 'Acciaio'],
+  'Elettro': ['Elettro', 'Volante', 'Acciaio'],
+  'Erba': ['Acqua', 'Elettro', 'Erba', 'Terra'],
+  'Ghiaccio': ['Ghiaccio'],
+  'Lotta': ['Coleottero', 'Roccia', 'Buio'],
+  'Veleno': ['Erba', 'Lotta', 'Veleno', 'Coleottero', 'Folletto'],
+  'Terra': ['Veleno', 'Roccia'],
+  'Volante': ['Erba', 'Lotta', 'Coleottero'],
+  'Psico': ['Lotta', 'Psico'],
+  'Coleottero': ['Erba', 'Lotta', 'Terra'],
+  'Roccia': ['Normale', 'Fuoco', 'Veleno', 'Volante'],
+  'Spettro': ['Veleno', 'Coleottero'],
+  'Drago': ['Fuoco', 'Acqua', 'Elettro', 'Erba'],
+  'Buio': ['Spettro', 'Buio'],
+  'Acciaio': ['Normale', 'Erba', 'Ghiaccio', 'Volante', 'Psico', 'Coleottero', 'Roccia', 'Drago', 'Acciaio', 'Folletto'],
+  'Folletto': ['Lotta', 'Coleottero', 'Buio'],
+};

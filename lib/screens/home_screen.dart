@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../constants.dart';
+import '../mode.dart';
 import '../services/session.dart';
 import '../theme.dart';
 import '../widgets/badge_row.dart';
@@ -13,6 +14,7 @@ import 'gyms_screen.dart';
 import 'inventory_screen.dart';
 import 'party_tab.dart';
 import 'settings_screen.dart';
+import 'table_tab.dart';
 
 enum HomeTab { stats, party, battle, bag, map }
 
@@ -58,6 +60,8 @@ class _HomeScreenState extends State<HomeScreen> {
             padding: const EdgeInsets.fromLTRB(16, 8, 16, 40),
             child: Column(children: [
               const GameWatcher(),
+              if (kTableMode) const TableWatcher(),
+              if (kTableMode) const TurnBar(),
               const StatusBanner(),
               const SizedBox(height: 8),
               _Tabs(color: color, tab: _tab, onTab: (t) => setState(() => _tab = t)),
@@ -67,12 +71,19 @@ class _HomeScreenState extends State<HomeScreen> {
                 HomeTab.party => const PartyTab(),
                 HomeTab.battle => BattleTab(key: ValueKey(_openBattleId), initialBattleId: _openBattleId),
                 HomeTab.bag => const InventoryTab(),
-                HomeTab.map => GymsTab(
-                    onBattle: (id) => setState(() {
-                      _openBattleId = id;
-                      _tab = HomeTab.battle;
-                    }),
-                  ),
+                HomeTab.map => kTableMode
+                    ? TableTab(
+                        onBattle: (id) => setState(() {
+                          _openBattleId = id;
+                          _tab = HomeTab.battle;
+                        }),
+                      )
+                    : GymsTab(
+                        onBattle: (id) => setState(() {
+                          _openBattleId = id;
+                          _tab = HomeTab.battle;
+                        }),
+                      ),
               },
             ]),
           ),
@@ -220,7 +231,9 @@ class _Tabs extends StatelessWidget {
         _btn(HomeTab.party, 'Party', asset: 'assets/images/party.png'),
         _btn(HomeTab.battle, 'Battaglia', asset: 'assets/images/battle.png'),
         _btn(HomeTab.bag, 'Borsa', icon: Icons.backpack_outlined),
-        _btn(HomeTab.map, 'Mappa', icon: Icons.map_outlined),
+        kTableMode
+            ? _btn(HomeTab.map, 'Tavolo', icon: Icons.casino_outlined)
+            : _btn(HomeTab.map, 'Mappa', icon: Icons.map_outlined),
       ]);
 }
 

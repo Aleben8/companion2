@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import 'mode.dart';
+
 /// Identificatori degli strumenti (chiavi usate in Firestore: Users/{u}.inventory).
 enum ItemId { repellente, caramella, fune, trappola, pozione, calmanella, revitalizzante, radar }
 
@@ -24,6 +26,11 @@ const int kPotionHeal = 10; // PS curati dalla Pozione
 const int kCandyBonus = 4; // bonus al dado della Caramella Rara
 const double kTrapRadiusMeters = 30; // raggio di attivazione della Trappola
 
+// Al tavolo le durate sono in GIRI (un giro = tutti i giocatori hanno giocato)
+const int kRepellentRounds = 2;
+const int kKoRounds = 1;
+const int kFleeBlockRounds = 2;
+
 /// Dotazione iniziale: ogni giocatore parte con tutti gli strumenti.
 const Map<ItemId, int> kStartingInventory = {
   ItemId.repellente: 1,
@@ -40,8 +47,11 @@ const List<ItemDef> kItems = [
   ItemDef(
     ItemId.repellente,
     'Repellente',
-    'La localizzazione del tuo party sarà nascosta al resto dei giocatori per $kRepellentMinutes minuti. '
-        'Durante questo tempo non potete essere ingaggiati in scontri.',
+    kTableMode
+        ? 'La posizione del tuo party sarà nascosta al resto dei giocatori per $kRepellentRounds giri. '
+            'Durante questo tempo non potete essere ingaggiati in scontri.'
+        : 'La localizzazione del tuo party sarà nascosta al resto dei giocatori per $kRepellentMinutes minuti. '
+            'Durante questo tempo non potete essere ingaggiati in scontri.',
     'Si usa dallo zaino.',
     [Color(0xFF5A9E88), Color(0xFF8CD0A8)],
   ),
@@ -65,9 +75,14 @@ const List<ItemDef> kItems = [
   ItemDef(
     ItemId.trappola,
     'Trappola',
-    'Posizionala dove preferisci. Il primo party avversario che si avvicinerà alla zona dovrà usare '
-        'una Fune di fuga o perderà $kTrapPenaltyMinutes minuti.',
-    'Si usa dallo zaino: la trappola viene piazzata nella tua posizione.',
+    kTableMode
+        ? 'Posizionala nel tuo settore. Il primo party avversario che entrerà nel settore dovrà usare '
+            'una Fune di fuga o salterà il prossimo turno.'
+        : 'Posizionala dove preferisci. Il primo party avversario che si avvicinerà alla zona dovrà usare '
+            'una Fune di fuga o perderà $kTrapPenaltyMinutes minuti.',
+    kTableMode
+        ? 'Si usa dalla borsa: la trappola viene piazzata nel settore in cui ti trovi.'
+        : 'Si usa dallo zaino: la trappola viene piazzata nella tua posizione.',
     [Color(0xFF6B5B95), Color(0xFFA79BD0)],
   ),
   ItemDef(
@@ -81,21 +96,27 @@ const List<ItemDef> kItems = [
   ItemDef(
     ItemId.calmanella,
     'Calmanella',
-    'Utilizzando la Calmanella, rivelerai la tua posizione attuale agli altri giocatori.',
+    kTableMode
+        ? 'Utilizzando la Calmanella, rivelerai la tua zona e il tuo settore agli altri giocatori.'
+        : 'Utilizzando la Calmanella, rivelerai la tua posizione attuale agli altri giocatori.',
     'Si usa dallo zaino.',
     [Color(0xFFE5644E), Color(0xFFF0A060)],
   ),
   ItemDef(
     ItemId.revitalizzante,
     'Revitalizzante',
-    'Il tuo Pokémon sconfitto recupera subito tutti i punti vita: non perdi i $kKoMinutes minuti di recupero.',
+    kTableMode
+        ? 'Il tuo Pokémon sconfitto recupera subito tutti i punti vita: non perdi il turno di recupero.'
+        : 'Il tuo Pokémon sconfitto recupera subito tutti i punti vita: non perdi i $kKoMinutes minuti di recupero.',
     'Si usa dallo zaino, quando il tuo Pokémon è esausto.',
     [Color(0xFF5FA8E0), Color(0xFFB4DDF5)],
   ),
   ItemDef(
     ItemId.radar,
     'Radar',
-    'Ti viene fornita la posizione attuale di tutti gli altri party.',
+    kTableMode
+        ? 'Ti viene fornita la zona e il settore in cui si trovano tutti gli altri party.'
+        : 'Ti viene fornita la posizione attuale di tutti gli altri party.',
     'Si usa dallo zaino.',
     [Color(0xFF3E8CA8), Color(0xFF7FBCD0)],
   ),

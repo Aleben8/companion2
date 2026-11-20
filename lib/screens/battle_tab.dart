@@ -868,6 +868,10 @@ class _ResultCard extends StatelessWidget {
           const SizedBox(height: 8),
           InfoChip('🏅 Badge ottenuto: ${data['badgeEarned']}', color: const Color(0xFFD08A00)),
         ],
+        if (data['rewardText'] != null) ...[
+          const SizedBox(height: 8),
+          InfoChip('🎁 ${data['rewardText']}', color: const Color(0xFFD08A00)),
+        ],
         const SizedBox(height: 14),
         DropButton(label: 'Nuova battaglia', icon: Icons.refresh, colors: colors, onTap: onNew),
       ]),

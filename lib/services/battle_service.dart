@@ -5,8 +5,10 @@ import 'package:flutter/foundation.dart';
 
 import '../constants.dart';
 import '../items.dart';
+import '../mode.dart';
 import 'gym_service.dart';
 import 'item_service.dart';
+import 'table_service.dart';
 import 'party_service.dart';
 
 int _i(dynamic v, [int def = 0]) => v is num ? v.round() : def;
@@ -99,6 +101,14 @@ class BattleService {
     return List.generate(n, (_) => chars[_rnd.nextInt(chars.length)]).join();
   }
 
+  /// Al tavolo: bonus di danno dovuti agli eventi attivi nella zona del giocatore.
+  static Future<Map<String, dynamic>> _zoneFields(String uid) async {
+    if (!kTableMode) return {};
+    final party = await PartyService.actualParty(uid);
+    final bonus = await TableService.zoneBonusFor(party, uid);
+    return bonus.isEmpty ? {} : {'zoneBonus': bonus};
+  }
+
   /// Crea una battaglia in attesa. Codice: `{utente}-{3 caratteri}-{HHmm}`.
   static Future<String> createBattle(String uid, String pk) async {
     await ItemService.assertCanFight(uid);
@@ -113,6 +123,7 @@ class BattleService {
       'playerA': _combatant(uid, pk, d, moves),
       'playerB': null,
       'last_turn_log': 'In attesa del secondo giocatore...',
+      ...await _zoneFields(uid),
     });
     return id;
   }
@@ -204,6 +215,7 @@ class BattleService {
     required Map<String, dynamic> gym,
     required String uid,
     required String pk,
+    Map<String, dynamic>? extra,
   }) async {
     await ItemService.assertCanFight(uid);
     final moves = await loadMoves(uid, pk);
@@ -225,7 +237,11 @@ class BattleService {
       'party': party,
       'playerA': _combatant(uid, pk, d, moves),
       'playerB': npc,
-      'last_turn_log': 'Il capopalestra ${l['trainer']} ti sfida con ${l['pokemon']}! Scegli la tua mossa.',
+      'last_turn_log': l['trainer'] != null
+          ? 'Il capopalestra ${l['trainer']} ti sfida con ${l['pokemon']}! Scegli la tua mossa.'
+          : '${l['pokemon']} leggendario ti sfida! Scegli la tua mossa.',
+      ...await _zoneFields(uid),
+      ...?extra,
     });
     return id;
   }
@@ -268,7 +284,7 @@ class BattleService {
       final inv = ItemService.readInventory((await tx.get(meRef)).data());
       if ((inv['fune'] ?? 0) <= 0) throw Exception('Non hai Funi di fuga');
       inv['fune'] = inv['fune']! - 1;
-      final until = Timestamp.fromDate(DateTime.now().add(const Duration(minutes: kFleeBlockMinutes)));
+      final until = ItemService.fleeUntil();
       final oppIsNpc = (opp['uid'] as String).startsWith('gym:');
       tx.set(meRef, {'inventory': inv, if (!oppIsNpc) 'fleeBlocks': {opp['uid']: until}}, SetOptions(merge: true));
       if (!oppIsNpc) tx.set(oppRef, {'fleeBlocks': {me['uid']: until}}, SetOptions(merge: true));
@@ -405,8 +421,15 @@ class BattleService {
 
     if (result.winnerUid != null) {
       if (data['npc'] == true) {
-        // Vittoria contro un capopalestra: badge (solo la prima volta).
-        if (!result.winnerUid!.startsWith('gym:')) {
+        if (data['legendary'] == true) {
+          // Leggendario: ricompensa al primo che lo batte.
+          if (!result.winnerUid!.startsWith('gym:')) {
+            final txt = await TableService.rewardLegendary(
+                data['party'] as String, data['eventId'] as String, result.winnerUid!);
+            if (txt != null) await ref.update({'rewardText': txt});
+          }
+        } else if (!result.winnerUid!.startsWith('gym:')) {
+          // Vittoria contro un capopalestra: badge (solo la prima volta).
           final isNew = await GymService.awardBadge(
             result.winnerUid!,
             data['gymId'] as String,
@@ -453,6 +476,9 @@ class BattleService {
       }
     }
 
+    final zoneBonus = (data['zoneBonus'] as Map?)?.map((k, v) => MapEntry(k.toString().toLowerCase(), (v as num).toInt())) ??
+        <String, int>{};
+
     void attack(Map<String, dynamic> atk, Map<String, dynamic> def) {
       final action = atk['last_action'];
       if (action != 'attack' && action != 'attackSpec') return;
@@ -483,9 +509,12 @@ class BattleService {
       );
       var total = max(0, dmg + roll.bonus + roll.elementalModifier);
       if (roll.category == 'Nullo') total = 0; // tiro 1 = attacco Nullo
+      final zb = zoneBonus[(move?['MoveType'] ?? '').toString().trim().toLowerCase()] ?? 0;
+      if (total > 0 && zb > 0) total += zb; // bonus di zona (evento attivo)
 
       log.write('${atk['pokemon_name']} lancia $moveName '
           '(${roll.category}, Dado: ${roll.rawDice}${roll.dice != roll.rawDice ? '+${roll.dice - roll.rawDice}' : ''}).\n');
+      if (zb > 0 && total > 0) log.write('Bonus di zona: +$zb.\n');
       if (roll.elementalModifier > 0) {
         log.write('È super efficace! (+${roll.elementalModifier})\n');
       } else if (roll.elementalModifier < 0) {

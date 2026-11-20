@@ -3,6 +3,7 @@ import 'package:geolocator/geolocator.dart';
 import 'package:provider/provider.dart';
 
 import '../geo.dart';
+import '../mode.dart';
 import '../items.dart';
 import '../services/item_service.dart';
 import '../services/location_service.dart';
@@ -69,18 +70,18 @@ class _InventoryTabState extends State<InventoryTab> {
         case ItemId.calmanella:
           if (!await _confirm('Calmanella', 'Gli altri giocatori sapranno dove sei in questo momento.')) break;
           final partyB = await _party();
-          final posB = await _position();
+          final Position? posB = kTableMode ? null : await _position();
           await ItemService.useBell(_uid, partyB, posB);
           if (mounted) snack(context, '🔔 Hai rivelato la tua posizione');
         case ItemId.trappola:
           if (!await _confirm('Trappola', 'Verrà piazzata qui, nella tua posizione attuale.')) break;
           final partyT = await _party();
-          final posT = await _position();
+          final Position? posT = kTableMode ? null : await _position();
           await ItemService.placeTrap(_uid, partyT, posT);
           if (mounted) snack(context, 'Trappola piazzata!');
         case ItemId.radar:
           final partyR = await _party();
-          final posR = await _position();
+          final Position? posR = kTableMode ? null : await _position();
           final contacts = await ItemService.useRadar(_uid, partyR, posR);
           if (mounted) _showRadar(contacts);
         case ItemId.caramella:
@@ -109,9 +110,9 @@ class _InventoryTabState extends State<InventoryTab> {
               ListTile(
                 leading: const Icon(Icons.radar, color: Color(0xFF7FBCD0)),
                 title: Text(c.name, style: const TextStyle(color: Pal.ink, fontWeight: FontWeight.w700)),
-                subtitle: Text('${formatDistance(c.distance)} verso ${c.direction}',
+                subtitle: Text(c.place ?? '${formatDistance(c.distance)} verso ${c.direction}',
                     style: const TextStyle(color: Pal.sub)),
-                trailing: Text(formatAge(c.age), style: const TextStyle(color: Pal.sub, fontSize: 12)),
+                trailing: c.place != null ? null : Text(formatAge(c.age), style: const TextStyle(color: Pal.sub, fontSize: 12)),
               ),
         ]),
       ),

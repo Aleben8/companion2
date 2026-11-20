@@ -6,6 +6,8 @@
 /// (vedi [kTypeProfiles]).
 library;
 
+import 'table/type_chart.dart';
+
 /// Raggio entro cui si può sfidare una palestra.
 const double kGymRadiusMeters = 50;
 
@@ -152,6 +154,20 @@ const Map<String, TypeProfile> kTypeProfiles = {
     defenseChance: 0.08,
     dodgeChance: 0.25,
   ),
+  'Ghiaccio': TypeProfile(
+    pokemon: ['Glaceon', 'Abomasnow', 'Weavile', 'Walrein', 'Glalie', 'Mamoswine'],
+    trainers: ['Brina', 'Gelsomino', 'Nevio', 'Cristalla', 'Borea'],
+    moves: [
+      MoveTemplate('Geloraggio', true, 'Un raggio di freddo intenso.'),
+      MoveTemplate('Gelopugno', false, 'Un pugno ricoperto di ghiaccio.'),
+      MoveTemplate('Bora', true, 'Un vento gelido che rallenta tutto.'),
+      MoveTemplate('Cristalloscudo', false, 'Schegge di ghiaccio affilate.'),
+    ],
+    effects: [EffectPref('Rallentamento'), EffectPref('Rallentamento'), EffectPref('Debuff', 'Atk'), EffectPref(null)],
+    statWeights: {'Atk': 2, 'AtkSpec': 4, 'Def': 3, 'DefSpec': 4, 'Vel': 2},
+    defenseChance: 0.20,
+    dodgeChance: 0.10,
+  ),
   'Roccia': TypeProfile(
     pokemon: ['Onix', 'Golem', 'Rhyperior', 'Tyranitar', 'Aerodactyl', 'Omastar'],
     trainers: ['Petra', 'Sasso', 'Rocco', 'Pietro', 'Selce'],
@@ -169,19 +185,5 @@ const Map<String, TypeProfile> kTypeProfiles = {
 };
 
 /// Debolezze/resistenze di riserva se in Firestore (collezione "Tipi") manca il documento.
-const Map<String, List<String>> kFallbackWeak = {
-  'Normale': ['Lotta'],
-  'Erba': ['Fuoco', 'Ghiaccio', 'Veleno', 'Volante', 'Coleottero'],
-  'Acqua': ['Elettro', 'Erba'],
-  'Fuoco': ['Acqua', 'Terra', 'Roccia'],
-  'Volante': ['Elettro', 'Ghiaccio', 'Roccia'],
-  'Roccia': ['Acqua', 'Erba', 'Lotta', 'Terra', 'Acciaio'],
-};
-const Map<String, List<String>> kFallbackResist = {
-  'Normale': [],
-  'Erba': ['Acqua', 'Elettro', 'Erba', 'Terra'],
-  'Acqua': ['Fuoco', 'Acqua', 'Ghiaccio', 'Acciaio'],
-  'Fuoco': ['Fuoco', 'Erba', 'Ghiaccio', 'Coleottero', 'Acciaio', 'Folletto'],
-  'Volante': ['Erba', 'Lotta', 'Coleottero'],
-  'Roccia': ['Normale', 'Fuoco', 'Veleno', 'Volante'],
-};
+const Map<String, List<String>> kFallbackWeak = kTypeWeak;
+const Map<String, List<String>> kFallbackResist = kTypeResist;

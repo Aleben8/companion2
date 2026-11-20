@@ -6,6 +6,7 @@ import 'package:provider/provider.dart';
 
 import '../constants.dart';
 import '../services/item_service.dart';
+import '../table/type_chart.dart';
 import '../services/session.dart';
 import '../widgets/common.dart';
 import 'moves_screen.dart';
@@ -90,6 +91,9 @@ class _CreateCharacterScreenState extends State<CreateCharacterScreen> {
       if (t.exists) {
         resist = List<String>.from(t.data()?['Resistenze'] ?? []);
         weak = List<String>.from(t.data()?['Debolezze'] ?? []);
+      } else {
+        resist = [...?kTypeResist[_primary]];
+        weak = [...?kTypeWeak[_primary]];
       }
       await userRef.set({'UserName': user, 'inventory': ItemService.startingInventory()});
       await userRef.collection('Pokemon').doc(pk).set({
