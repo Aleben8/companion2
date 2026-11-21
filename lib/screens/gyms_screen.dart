@@ -16,6 +16,7 @@ import '../services/party_service.dart';
 import '../services/session.dart';
 import '../theme.dart';
 import '../widgets/common.dart';
+import '../widgets/clue_search.dart';
 import '../widgets/drop.dart';
 
 /// Mappa e lista delle palestre (tab della home). Se il giocatore sfida un
@@ -316,7 +317,9 @@ class _GymsTabState extends State<GymsTab> {
                   const SectionTitle('Mappa'),
                   const SizedBox(height: 6),
                   _map(docs, pos, badges),
-                  const SizedBox(height: 16),
+                  const SizedBox(height: 8),
+                  ClueSearchButton(party: _party!, uid: _s.userName!),
+                  const SizedBox(height: 8),
                   if (_master) _masterTools(started, docs),
                   if (!started)
                     const Padding(

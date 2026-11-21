@@ -127,31 +127,6 @@ class _CluesCardState extends State<CluesCard> {
         if (mounted) setState(() => _editing = false);
       }, ok: 'Indizi piazzati!');
 
-  Future<void> _search() => _run(() async {
-        Position? pos;
-        if (!kTableMode) pos = await context.read<LocationService>().current();
-        final found = await ClueService.search(party: widget.party, uid: widget.uid, pos: pos);
-        if (!mounted) return;
-        await showDialog<void>(
-          context: context,
-          builder: (ctx) => AlertDialog(
-            title: Text(found.isEmpty ? 'Nessun indizio qui' : 'Hai trovato ${found.length == 1 ? 'un indizio' : '${found.length} indizi'}!'),
-            content: found.isEmpty
-                ? const Text('Non c’è niente da raccogliere in questo punto.')
-                : Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
-                    for (final c in found) ...[
-                      Text('${c['symbol']}${c['number']}', style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w800)),
-                      Text('${c['text']}', style: const TextStyle(fontStyle: FontStyle.italic)),
-                      if (kTableMode)
-                        Text('Prendi la carta ${c['symbol']}${c['number']} dal tavolo.', style: const TextStyle(color: Pal.sub, fontSize: 12)),
-                      const SizedBox(height: 10),
-                    ],
-                  ]),
-            actions: [FilledButton(onPressed: () => Navigator.pop(ctx), child: const Text('Ok'))],
-          ),
-        );
-      });
-
   // ------------------------------------------------------------------ UI
 
   @override
@@ -322,12 +297,11 @@ class _CluesCardState extends State<CluesCard> {
     final foundByMe = clues.where((c) => c['foundBy'] == widget.uid).toList();
     final declared = clues.where((c) => c['declared'] == true).toList();
     return [
-      DropButton(
-        label: kTableMode ? 'Cerca indizi qui (1 azione)' : 'Cerca indizi qui',
-        icon: Icons.search,
-        colors: _cluesColors,
-        busy: _busy,
-        onTap: _search,
+      Text(
+        kTableMode
+            ? 'Per cercare gli indizi vai nella tab Tavolo, nella sezione Mappa.'
+            : 'Per cercare gli indizi vai nella tab Mappa.',
+        style: const TextStyle(color: Pal.sub, fontSize: 12),
       ),
       if (foundByMe.isNotEmpty) ...[
         const SizedBox(height: 16),
@@ -350,7 +324,18 @@ class _CluesCardState extends State<CluesCard> {
                   icon: Icons.campaign,
                   height: 40,
                   colors: Pal.gold,
-                  onTap: _busy ? null : () => _run(() => ClueService.declare(widget.party, c['id'] as String, widget.uid)),
+                  onTap: _busy
+                      ? null
+                      : () => _run(() async {
+                            final bonus = await ClueService.declare(widget.party, c['id'] as String, widget.uid);
+                            if (!mounted) return;
+                            snack(
+                              context,
+                              bonus != null
+                                  ? '🎁 Indizio dichiarato! Strumento bonus: $bonus'
+                                  : 'Indizio dichiarato (era destinato a te: nessun bonus)',
+                            );
+                          }),
                 ),
             ]),
           ),

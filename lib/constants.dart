@@ -1,8 +1,5 @@
 import 'package:flutter/material.dart';
 
-/// Party in cui si sblocca il numero segreto dopo una vittoria.
-const String kRewardParty = 'SecretBB';
-
 const int kBaseHp = 40;
 const int kBaseEnergy = 15;
 const int kStatMax = 15; // massimo per singola statistica

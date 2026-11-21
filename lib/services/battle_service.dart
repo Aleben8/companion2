@@ -438,14 +438,6 @@ class BattleService {
           );
           if (isNew) await ref.update({'badgeEarned': data['gymName']});
         }
-      } else {
-        // Premio: sblocca il numero del vincitore (una sola volta per battaglia).
-        await _db.runTransaction<void>((tx) async {
-          final d = (await tx.get(ref)).data() ?? {};
-          if (d['rewardUnlocked'] == true) return;
-          tx.update(ref, {'rewardUnlocked': true});
-        });
-        await PartyService.unlockNumber(kRewardParty, result.winnerUid!);
       }
     }
   }

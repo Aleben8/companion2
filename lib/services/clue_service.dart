@@ -4,13 +4,15 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:geolocator/geolocator.dart';
 
 import '../geo.dart';
+import '../items.dart';
 import '../mode.dart';
 import 'item_service.dart';
 import 'party_service.dart';
 import 'table_service.dart';
 
-/// Raggio (dal vivo) entro cui si trova un indizio.
-const double kClueRadiusMeters = 25;
+/// Raggio (dal vivo) entro cui si trova un indizio. Il GPS ha un'incertezza di qualche metro:
+/// se la ricerca fallisce spesso, alzalo (es. 15).
+const double kClueRadiusMeters = 10;
 const int kCluesPerPlayer = 3;
 
 /// Un simbolo per giocatore: identifica chi ha piazzato l'indizio (carte sul tavolo).
@@ -158,13 +160,24 @@ class ClueService {
   }
 
   /// "Ho preso la carta": dichiara di avere l'indizio (lo vedono tutti, senza il testo).
-  static Future<void> declare(String party, String clueId, String uid) {
+  /// Se l'indizio NON era destinato a te, ricevi uno strumento a caso come bonus
+  /// (è il premio per aver rischiato di diventare un bersaglio). Restituisce il nome dello strumento, o null.
+  static Future<String?> declare(String party, String clueId, String uid) {
     final ref = clues(party).doc(clueId);
-    return _db.runTransaction<void>((tx) async {
+    final uref = ItemService.userRef(uid);
+    return _db.runTransaction<String?>((tx) async {
       final c = (await tx.get(ref)).data();
+      final u = (await tx.get(uref)).data() ?? {};
       if (c == null || c['foundBy'] != uid) throw Exception('Non hai questo indizio');
-      if (c['declared'] == true) return;
-      tx.update(ref, {'declared': true, 'declaredAt': FieldValue.serverTimestamp()});
+      if (c['declared'] == true) return null;
+      final bonus = c['targetUid'] != uid;
+      tx.update(ref, {'declared': true, 'declaredAt': FieldValue.serverTimestamp(), 'bonusGiven': bonus});
+      if (!bonus) return null;
+      final id = ItemId.values[_rnd.nextInt(ItemId.values.length)];
+      final inv = ItemService.readInventory(u);
+      inv[id.name] = (inv[id.name] ?? 0) + 1;
+      tx.set(uref, {'inventory': inv}, SetOptions(merge: true));
+      return itemDef(id).name;
     });
   }
 }

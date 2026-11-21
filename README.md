@@ -61,7 +61,8 @@ Entrambe le modalità usano lo stesso progetto Firebase (`lib/firebase_options.d
 
 ## Indizi sulla mappa (live e tavolo)
 
-Tab **Party**, scheda "Indizi sulla mappa". Funziona uguale nelle due modalità; cambia solo il modo di indicare il luogo.
+Tab **Party**, scheda "Indizi sulla mappa" (piazzamento, indizi trovati e dichiarati). La **ricerca** sta nella sezione dei movimenti:
+tab **Tavolo > Mappa** (tavolo) oppure tab **Mappa** (dal vivo). Funziona uguale nelle due modalità; cambia solo il modo di indicare il luogo.
 
 1. **Apertura (Master).** Chi ha `isMaster: true` preme "Apri il piazzamento degli indizi": a ogni giocatore viene assegnato a caso un
    **simbolo** (▲ ● ■ ◆ ★ ✚ ☾ ❖ ♥ ♣) e gli eventuali indizi precedenti vengono cancellati.
@@ -69,13 +70,17 @@ Tab **Party**, scheda "Indizi sulla mappa". Funziona uguale nelle due modalità;
    li nasconde: al tavolo scegliendo zona e settore, dal vivo premendo "Piazza qui (GPS)" nel punto in cui si trova.
    Finché il piazzamento è aperto può modificarli. Gli indizi sono identificati da simbolo + numero (▲1, ▲2, ▲3), come le carte sul tavolo.
 3. **Chiusura (Master).** "Chiudi il piazzamento e inizia" (avvisa se non tutti sono pronti).
-4. **Ricerca.** "Cerca indizi qui": al tavolo cerca nel tuo settore e **costa 1 azione** (anche se non trovi nulla), dal vivo entro 25 m
-   (`kClueRadiusMeters`). Si trovano gli indizi di chiunque tranne i propri, non solo quelli destinati a te. Il testo lo vede solo chi trova.
-5. **Dichiarazione.** Chi ha trovato un indizio può "dichiararlo" (al tavolo: dopo aver preso la carta). Gli indizi dichiarati compaiono a tutti
+4. **Ricerca.** "Cerca indizi qui": al tavolo cerca nel tuo settore e **costa 1 azione** (anche se non trovi nulla, e solo nel tuo turno),
+   dal vivo entro **10 m** (`kClueRadiusMeters` in `lib/services/clue_service.dart`: il GPS sbaglia di qualche metro, se la ricerca
+   fallisce spesso alzalo). Si trovano gli indizi di chiunque tranne i propri, non solo quelli destinati a te. Il testo lo vede solo chi trova.
+5. **Dichiarazione e bonus.** Chi ha trovato un indizio può "dichiararlo" (al tavolo: dopo aver preso la carta). **Se l'indizio non era destinato a lui,
+   riceve uno strumento a caso come bonus** (è il premio per il rischio di diventare un bersaglio). Gli indizi dichiarati compaiono a tutti
    come "Giocatore · ▲2", senza testo. Chi ha piazzato un indizio vede solo se è "Nascosto" o "Trovato", non da chi.
 
 Limite: i testi degli indizi stanno nel database e la app li nasconde, ma un giocatore esperto potrebbe leggerli dalla console.
 Per un gioco tra amici va bene.
+
+Il vecchio sistema (numero del giocatore, numero assegnato, indovinello da sbloccare vincendo) è stato **rimosso**.
 
 Dati: `Party/{codice}.cluePhase`, `Party/{codice}/clues/{id}`, `Party/{codice}/players/{uid}.symbol` e `.cluesReady`.
 
@@ -146,7 +151,6 @@ assets/images/...                 sprite e icone originali
 - Danno = Dmg mossa + bonus categoria + modificatore elementale (+categoria se debolezza, −categoria se resistenza).
 - Costo energia per Dmg 1..7: 1, 2, 4, 7, 9, 10, 11. Difesa: danno dimezzato e +3 energie. Schiva: evita i colpi non imbloccabili.
 - Effetti (probabilità per Dmg ≤1: 0,8 · 2: 0,5 · 3: 0,35 · 4: 0,2 · ≥5: 0): Danno nel tempo, Rallentamento (Vel −2), Debuff (−1 a una stat).
-- Il vincitore sblocca il proprio numero assegnato nel party `SecretBB` (costante `kRewardParty`).
 
 
 
@@ -236,7 +240,6 @@ difende, Fuoco attacca quasi sempre. Se non ha energia per nessuna mossa si dife
 
 **Sfida.** Serve essere entro 50 m (`kGymRadiusMeters`). La vittoria dà il **badge** della palestra (una sola volta); la sconfitta
 mette il Pokémon in recupero per 5 minuti come in ogni battaglia. Gli oggetti (Pozione, Caramella, Fune di fuga) valgono anche qui.
-I badge compaiono nel profilo; nelle battaglie contro capipalestra non si sblocca il numero segreto.
 
 **Coordinate: da calibrare.** Non ho trovato coordinate affidabili online, quindi quelle in `kGyms` sono provvisorie.
 Due modi per sistemarle: (1) sul posto, il Master preme **Imposta qui** accanto a ogni palestra; (2) sostituire i valori in
@@ -257,7 +260,6 @@ Dati Firestore aggiunti: `Party/{codice}/gyms/{gymId}` (palestra + capopalestra)
 
 - Un attacco con energia insufficiente ora **non** infligge danno (nell'originale veniva solo scritto nel log).
 - Un tiro di 1 (Nullo) fa davvero 0 danni.
-- "Assegna numeri ai player" lavora sul party corrente (l'originale era fisso su `SecretBB`).
 - Il numero del turno nel log parte da 1.
 
 > Nota: questa versione non è stata compilata né provata (nell'ambiente di lavoro non c'è Flutter).

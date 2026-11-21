@@ -14,6 +14,7 @@ import '../services/table_service.dart';
 import '../table/events.dart';
 import '../table/zones.dart';
 import '../theme.dart';
+import '../widgets/clue_search.dart';
 import '../widgets/common.dart';
 import '../widgets/drop.dart';
 
@@ -166,6 +167,11 @@ class _TableTabState extends State<TableTab> {
                     _positionCard(pos),
                     ..._eventCards(events, st, pos, me),
                     const SectionTitle('Mappa'),
+                    ClueSearchButton(
+                      party: _party!,
+                      uid: me,
+                      enabled: List<String>.from(st['order'] as List)[_i(st['idx'])] == me,
+                    ),
                     for (final z in kZones) _zoneCard(z, pos, events, st, me),
                   ],
                 ]);

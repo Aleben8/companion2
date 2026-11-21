@@ -9,7 +9,7 @@ import '../services/session.dart';
 import '../theme.dart';
 import '../widgets/common.dart';
 
-/// "Gestione Party": azioni da Master, cambio/ingresso party e colore del Pokémon.
+/// "Gestione Party": cambio/ingresso party e colore del Pokémon.
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
   @override
@@ -21,7 +21,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
   String? _party;
   List<String> _parties = [];
   Color _color = kDefaultColor;
-  bool _isMaster = false;
   bool _loading = true;
   bool _busy = false;
 
@@ -40,7 +39,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _parties = await PartyService.myParties(uid);
       if (_party != null && !_parties.contains(_party)) _parties = [..._parties, _party!];
       _color = _s.color;
-      if (_party != null) _isMaster = await PartyService.isMaster(_party!, uid);
     } catch (e) {
       debugPrint('Errore load settings: $e');
     }
@@ -52,7 +50,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
     try {
       await PartyService.switchParty(_s.userName!, code);
       _party = code;
-      _isMaster = await PartyService.isMaster(code, _s.userName!);
       if (mounted) snack(context, 'Passato al party: $code');
     } catch (e) {
       debugPrint('Errore switch: $e');
@@ -68,23 +65,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
       await PartyService.join(_s.userName!, code);
       _party = code;
       if (!_parties.contains(code)) _parties = [..._parties, code];
-      _isMaster = await PartyService.isMaster(code, _s.userName!);
       _newParty.clear();
       if (mounted) snack(context, 'Benvenuto in $code!');
     } catch (e) {
       if (mounted) snack(context, 'Errore join: $e', error: true);
     }
     if (mounted) setState(() => _busy = false);
-  }
-
-  Future<void> _assignNumbers() async {
-    if (_party == null) return;
-    try {
-      await PartyService.assignRandomNumbers(_party!);
-      if (mounted) snack(context, 'Numeri assegnati ai player');
-    } catch (e) {
-      if (mounted) snack(context, 'Errore: $e', error: true);
-    }
   }
 
   Future<void> _pickColor() async {
@@ -145,48 +131,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
           : ListView(
               padding: const EdgeInsets.all(16),
               children: [
-                Container(
-                  decoration: BoxDecoration(color: card, borderRadius: BorderRadius.circular(18), border: Border.all(color: Pal.line, width: 2)),
-                  child: Column(children: [
-                    ListTile(
-                      enabled: _isMaster,
-                      leading: const Icon(Icons.confirmation_number, color: Color(0xFFF4C542)),
-                      title: Text('Assegna numeri ai player', style: white.copyWith(fontSize: 20)),
-                      subtitle: const Text('Operazione riservata al Master', style: TextStyle(color: Pal.sub)),
-                      onTap: _isMaster ? _assignNumbers : null,
-                    ),
-                    const Divider(height: 1, color: Pal.line),
-                    if (_party != null)
-                      StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-                        stream: PartyService.party(_party!).snapshots(),
-                        builder: (context, snap) {
-                          final visible = snap.data?.data()?['riddleView'] == true;
-                          return ListTile(
-                            enabled: _isMaster,
-                            leading: Icon(visible ? Icons.lock_open : Icons.lock_outline,
-                                color: const Color(0xFF8FF0B0)),
-                            title: Text(
-                              visible ? 'Blocca visualizzazione indovinello' : 'Sblocca visualizzazione indovinello',
-                              style: white.copyWith(fontSize: 20),
-                            ),
-                            subtitle: Text(
-                              visible ? 'I player vedono l’indovinello' : 'Indovinello nascosto ai player',
-                              style: const TextStyle(color: Pal.sub),
-                            ),
-                            onTap: _isMaster
-                                ? () async {
-                                    await PartyService.setRiddleView(_party!, !visible);
-                                    if (context.mounted) {
-                                      snack(context, visible ? 'Indovinello bloccato' : 'Indovinello sbloccato');
-                                    }
-                                  }
-                                : null,
-                          );
-                        },
-                      ),
-                  ]),
-                ),
-                const SizedBox(height: 4),
                 Container(
                   padding: const EdgeInsets.all(16),
                   decoration: BoxDecoration(color: card, borderRadius: BorderRadius.circular(18), border: Border.all(color: Pal.line, width: 2)),
