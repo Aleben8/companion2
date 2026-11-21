@@ -5,6 +5,7 @@ import 'package:provider/provider.dart';
 import '../services/party_service.dart';
 import '../services/session.dart';
 import '../theme.dart';
+import '../widgets/clues_card.dart';
 import '../widgets/common.dart';
 import '../widgets/drop.dart';
 
@@ -181,6 +182,7 @@ class _PartyTabState extends State<PartyTab> {
             ]),
           ),
           _clues(uid),
+          CluesCard(party: _party!, uid: uid),
         ]);
       },
     );

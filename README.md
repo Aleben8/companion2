@@ -59,6 +59,26 @@ Entrambe le modalità usano lo stesso progetto Firebase (`lib/firebase_options.d
 - **Battaglie.** Funzionano come prima (codice da condividere). Gli eventi attivi nella zona di chi crea la battaglia danno il bonus di danno.
 - Le palestre GPS di Varese esistono solo nella modalità dal vivo.
 
+## Indizi sulla mappa (live e tavolo)
+
+Tab **Party**, scheda "Indizi sulla mappa". Funziona uguale nelle due modalità; cambia solo il modo di indicare il luogo.
+
+1. **Apertura (Master).** Chi ha `isMaster: true` preme "Apri il piazzamento degli indizi": a ogni giocatore viene assegnato a caso un
+   **simbolo** (▲ ● ■ ◆ ★ ✚ ☾ ❖ ♥ ♣) e gli eventuali indizi precedenti vengono cancellati.
+2. **Piazzamento.** Ogni giocatore sceglie a chi assegnare i suoi **3 indizi**, scrive il testo di ciascuno (max 90 caratteri) e
+   li nasconde: al tavolo scegliendo zona e settore, dal vivo premendo "Piazza qui (GPS)" nel punto in cui si trova.
+   Finché il piazzamento è aperto può modificarli. Gli indizi sono identificati da simbolo + numero (▲1, ▲2, ▲3), come le carte sul tavolo.
+3. **Chiusura (Master).** "Chiudi il piazzamento e inizia" (avvisa se non tutti sono pronti).
+4. **Ricerca.** "Cerca indizi qui": al tavolo cerca nel tuo settore e **costa 1 azione** (anche se non trovi nulla), dal vivo entro 25 m
+   (`kClueRadiusMeters`). Si trovano gli indizi di chiunque tranne i propri, non solo quelli destinati a te. Il testo lo vede solo chi trova.
+5. **Dichiarazione.** Chi ha trovato un indizio può "dichiararlo" (al tavolo: dopo aver preso la carta). Gli indizi dichiarati compaiono a tutti
+   come "Giocatore · ▲2", senza testo. Chi ha piazzato un indizio vede solo se è "Nascosto" o "Trovato", non da chi.
+
+Limite: i testi degli indizi stanno nel database e la app li nasconde, ma un giocatore esperto potrebbe leggerli dalla console.
+Per un gioco tra amici va bene.
+
+Dati: `Party/{codice}.cluePhase`, `Party/{codice}/clues/{id}`, `Party/{codice}/players/{uid}.symbol` e `.cluesReady`.
+
 ## Pubblicazione su GitHub Pages (come l'originale)
 
 Il file `.github/workflows/deploy.yml` è già incluso: a ogni `git push` su `main` GitHub ricompila e pubblica il sito
@@ -103,6 +123,8 @@ lib/
   mode.dart                       modalità (tavolo/live) e regole del tavolo
   table/                          zone, eventi di zona, tabella dei tipi
   services/table_service.dart     turni, spostamenti, eventi, leggendario
+  services/clue_service.dart      indizi: piazzamento, ricerca, dichiarazione
+  widgets/clues_card.dart         scheda "Indizi sulla mappa" (tab Party)
   screens/table_tab.dart          tab Tavolo, barra dei turni, osservatore
   geo.dart                        distanza e direzione
 assets/images/...                 sprite e icone originali
