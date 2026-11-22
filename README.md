@@ -65,6 +65,16 @@ Nel riquadro Master della tab Tavolo c'è l'interruttore **Eventi di zona manual
 - **Automatici**: la app pianifica e fa partire gli eventi (come prima). Passando ad automatico a partita in corso, i nuovi eventi vengono pianificati dal giro corrente.
 - **Manuali**: la app non pianifica nulla. Dopo aver pescato la carta, il Master tocca *Inserisci evento*, sceglie l'evento (e la zona per il leggendario) e decide se **annunciarlo** (poi lo fa partire con *Attiva*) o **attivarlo subito**. *Termina* chiude un evento in corso, *Annulla* ritira uno annunciato. Effetti e durata in giri restano quelli di `lib/table/events.dart`; il Radar meteo in manuale vede solo gli eventi già annunciati con una data.
 
+### Collegamenti tra zone e viaggi speciali
+
+Non tutte le zone confinano: ci si sposta (di settore o di zona) solo tra zone **collegate**. Il Master decide i collegamenti dal riquadro Master della tab Tavolo, bottone **Collegamenti tra zone** (spunta le coppie; "Proposta" ripristina la bozza letta dalla mappa, `kDefaultLinks` in `lib/table/zones.dart`). Le scelte restano salvate nel party e valgono dalla partita successiva e, se la partita è in corso, subito. Ogni scheda zona mostra a cosa è collegata.
+
+Per andare in una zona **non collegata**:
+- **Biglietto** (nuovo strumento, solo tavolo): la app lo propone nello spostamento; il costo in azioni è quello normale.
+- **Eventi di passaggio**: *Treno straordinario* (Hub) e *Traghetto dei relitti* (Isola). Finché sono attivi, chi è in quella zona raggiunge qualsiasi zona senza Biglietto. Si aggiungono a mano come tutti gli altri eventi, o escono nel sorteggio automatico.
+
+Tutti gli eventi di zona ora durano 2 giri.
+
 ## Indizi sulla mappa (live e tavolo)
 
 Tab **Party**, scheda "Indizi sulla mappa" (piazzamento, indizi trovati e dichiarati). La **ricerca** sta nella sezione dei movimenti:

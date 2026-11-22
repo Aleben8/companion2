@@ -21,4 +21,19 @@ const List<ZoneSpec> kZones = [
   ZoneSpec('colline', 'Colline ventose', 'Volante', 4, ['Zapdos', 'Lugia', 'Rayquaza']),
 ];
 
+/// Collegamenti PROPOSTI tra le zone (letti dalla mappa). Il Master li può cambiare dal riquadro
+/// "Collegamenti tra zone" della tab Tavolo: qui c'è solo il punto di partenza.
+const List<List<String>> kDefaultLinks = [
+  ['hub', 'canyon'],
+  ['hub', 'giungla'],
+  ['hub', 'neve'],
+  ['hub', 'campi'],
+  ['hub', 'isola'],
+  ['giungla', 'vulcano'],
+  ['giungla', 'neve'],
+  ['giungla', 'colline'],
+  ['neve', 'campi'],
+  ['canyon', 'colline'],
+];
+
 ZoneSpec zoneSpec(String id) => kZones.firstWhere((z) => z.id == id, orElse: () => kZones.first);

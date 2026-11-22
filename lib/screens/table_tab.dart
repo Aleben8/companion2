@@ -94,6 +94,64 @@ class _TableTabState extends State<TableTab> {
     if (go) await _run(() => TableService.startGame(_party!, manualEvents: _manualNext), ok: 'Partita avviata!');
   }
 
+  /// Master: decide quali zone sono collegate tra loro.
+  Future<void> _editLinks(Map<String, dynamic>? st) async {
+    final started = st != null && st['started'] == true;
+    final current = started ? TableService.linksOf(st) : await TableService.partyLinks(_party!);
+    final work = {...current};
+    if (!mounted) return;
+    final save = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, set) => AlertDialog(
+          title: const Text('Collegamenti tra zone'),
+          content: SizedBox(
+            width: 380,
+            child: ListView(shrinkWrap: true, children: [
+              const Text(
+                'Spunta le coppie di zone che confinano: ci si sposta solo tra zone collegate '
+                '(altrimenti serve un Biglietto o un treno/traghetto).',
+                style: TextStyle(fontSize: 12, color: Pal.sub),
+              ),
+              for (var i = 0; i < kZones.length; i++) ...[
+                Padding(
+                  padding: const EdgeInsets.only(top: 10),
+                  child: Text(kZones[i].name, style: const TextStyle(fontWeight: FontWeight.w800)),
+                ),
+                for (var j = i + 1; j < kZones.length; j++)
+                  CheckboxListTile(
+                    dense: true,
+                    contentPadding: EdgeInsets.zero,
+                    title: Text('↔ ${kZones[j].name}'),
+                    value: work.contains(TableService.linkKey(kZones[i].id, kZones[j].id)),
+                    onChanged: (v) => set(() {
+                      final k = TableService.linkKey(kZones[i].id, kZones[j].id);
+                      v == true ? work.add(k) : work.remove(k);
+                    }),
+                  ),
+              ],
+            ]),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => set(() {
+                work
+                  ..clear()
+                  ..addAll(TableService.defaultLinks);
+              }),
+              child: const Text('Proposta'),
+            ),
+            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Annulla')),
+            FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Salva')),
+          ],
+        ),
+      ),
+    );
+    if (save == true) {
+      await _run(() => TableService.setLinks(_party!, work), ok: 'Collegamenti salvati');
+    }
+  }
+
   /// Master, eventi manuali: sceglie l'evento della carta pescata (e la zona per il leggendario).
   Future<void> _addManualEvent() async {
     final defs = [...kZoneEventDefs, kLegendaryDef];
@@ -157,10 +215,26 @@ class _TableTabState extends State<TableTab> {
       return;
     }
     final cost = TableService.moveCost(events, pos?['zone'] as String?, z.id, shield: _shield);
-    final go = await _confirm('Spostamento', 'Vai in ${z.name}, settore $sector?\nCosto: $cost ${cost == 1 ? 'azione' : 'azioni'}.', 'Vai');
+    final route = TableService.routeTo(st, events, pos?['zone'] as String?, z.id);
+    var ticket = false;
+    if (route == MoveRoute.ticket) {
+      final qty = ItemService.readInventory((await ItemService.userRef(me).get()).data())['biglietto'] ?? 0;
+      if (qty <= 0) {
+        snack(context, '${z.name} non è collegata alla tua zona: serve un Biglietto (o un treno/traghetto).', error: true);
+        return;
+      }
+      ticket = true;
+    }
+    final go = await _confirm(
+      'Spostamento',
+      'Vai in ${z.name}, settore $sector?\nCosto: $cost ${cost == 1 ? 'azione' : 'azioni'}.'
+          '${ticket ? '\nZona non collegata: usi 1 Biglietto.' : ''}'
+          '${route == MoveRoute.passage ? '\nViaggi con il treno/traghetto: niente Biglietto.' : ''}',
+      'Vai',
+    );
     if (!go) return;
     await _run(() async {
-      final msg = await TableService.moveTo(party: _party!, uid: me, zone: z.id, sector: sector);
+      final msg = await TableService.moveTo(party: _party!, uid: me, zone: z.id, sector: sector, useTicket: ticket);
       if (msg != null && mounted) snack(context, msg, error: true);
     });
   }
@@ -288,6 +362,14 @@ class _TableTabState extends State<TableTab> {
               ]),
             ),
         ],
+        const SizedBox(height: 8),
+        DropButton(
+          label: 'Collegamenti tra zone',
+          icon: Icons.alt_route,
+          colors: Pal.neutral,
+          height: 44,
+          onTap: _busy ? null : () => _editLinks(st),
+        ),
         const SizedBox(height: 12),
         DropButton(
           label: started ? 'Riavvia la partita' : 'Avvia la partita',
@@ -458,11 +540,21 @@ class _TableTabState extends State<TableTab> {
     final mineZone = pos?['zone'] == z.id;
     final blocked = TableService.blockedSectors(events, z.id, shield: _shield);
     final zoneEvents = events.where((e) => e['zone'] == z.id && (e['status'] == 'active' || e['status'] == 'announced')).toList();
+    final links = TableService.linksOf(st);
+    final linked = [
+      for (final o in kZones)
+        if (o.id != z.id && links.contains(TableService.linkKey(z.id, o.id))) o.name,
+    ];
     return DropCard(
       colors: colors,
       label: mineZone ? '${z.name} · sei qui' : z.name,
       labelOnTop: true,
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Text(
+          linked.isEmpty ? 'Nessun collegamento diretto' : 'Collegata a: ${linked.join(', ')}',
+          style: const TextStyle(color: Pal.sub, fontSize: 12),
+        ),
+        const SizedBox(height: 6),
         if (zoneEvents.isNotEmpty) ...[
           Wrap(spacing: 6, runSpacing: 6, children: [
             for (final e in zoneEvents)

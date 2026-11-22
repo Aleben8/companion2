@@ -163,6 +163,7 @@ class _InventoryTabState extends State<InventoryTab> {
           if (!await _confirm(item.name, '${item.description}')) break;
           await ItemService.useShield(_uid, item.id);
           if (mounted) snack(context, '${item.name} attivo');
+        case ItemId.biglietto:
         case ItemId.caramella:
         case ItemId.fune:
         case ItemId.pozione:

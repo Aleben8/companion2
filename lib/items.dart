@@ -12,6 +12,8 @@ enum ItemId {
   elisir, superPozione, antidoto, amuleto, guanto,
   // protezioni di bioma (solo al tavolo, si comprano nell'emporio della zona)
   corda, bussola, tutaNeve, tutaIgnifuga, zattera, parafulmine,
+  // trasporti
+  biglietto,
 }
 
 enum ItemCategory { esplorazione, battaglia, zona }
@@ -359,6 +361,18 @@ const List<ItemDef> kItems = [
   ),
 
   // ---- Protezioni di bioma (emporio locale) -----------------------------------
+  ItemDef(
+    ItemId.biglietto,
+    'Biglietto',
+    'Ti permette di raggiungere una zona NON collegata alla tua (es. dalla Regione innevata all\'Isola dei relitti). '
+        'Il costo in azioni è quello normale dello spostamento.',
+    'Si usa spostandoti: se la zona non è collegata, la app te lo propone.',
+    [Color(0xFF8A6BC9), Color(0xFFC9B3F0)],
+    price: 5,
+    icon: Icons.train,
+    tableOnly: true,
+    rarity: 2,
+  ),
   ItemDef(
     ItemId.corda,
     'Corda da scalata',

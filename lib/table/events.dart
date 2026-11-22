@@ -18,6 +18,7 @@ class ZoneEventDef {
   final bool claimItem; // chi è nella zona può prendere uno strumento
   final List<String>? claimPool; // strumenti possibili (null = tutti)
   final bool legendary;
+  final bool passage; // mentre è attivo, dalla zona dell'evento si va in qualsiasi zona
   const ZoneEventDef({
     required this.id,
     this.zone = '',
@@ -34,6 +35,7 @@ class ZoneEventDef {
     this.claimItem = false,
     this.claimPool,
     this.legendary = false,
+    this.passage = false,
   });
 }
 
@@ -60,7 +62,6 @@ const List<ZoneEventDef> kZoneEventDefs = [
     announce: 'Il terreno del Canyon trema: attenti ai massi…',
     active: 'È crollata una frana: alcuni settori del Canyon sono bloccati.',
     table: 'Copri i settori bloccati con i segnalini roccia.',
-    duration: 3,
     blockSectors: 2,
   ),
   ZoneEventDef(
@@ -112,6 +113,24 @@ const List<ZoneEventDef> kZoneEventDefs = [
     blockSectors: 2,
   ),
   ZoneEventDef(
+    id: 'hub_treno',
+    zone: 'hub',
+    name: 'Treno straordinario',
+    announce: 'In stazione si parla di un treno speciale in partenza…',
+    active: 'Il treno è in stazione! Chi è nell’Hub può raggiungere qualsiasi zona senza Biglietto.',
+    table: 'Metti il segnalino treno sull’Hub.',
+    passage: true,
+  ),
+  ZoneEventDef(
+    id: 'isola_traghetto',
+    zone: 'isola',
+    name: 'Traghetto dei relitti',
+    announce: 'Una sirena si sente dal porto: sta per salpare un traghetto…',
+    active: 'Il traghetto è al molo! Chi è all’Isola dei relitti può raggiungere qualsiasi zona senza Biglietto.',
+    table: 'Metti il segnalino traghetto sull’Isola dei relitti.',
+    passage: true,
+  ),
+  ZoneEventDef(
     id: 'colline_tempesta',
     zone: 'colline',
     name: 'Tempesta elettrica',
@@ -128,7 +147,6 @@ const ZoneEventDef kLegendaryDef = ZoneEventDef(
   announce: 'Un’energia antica si risveglia in {zone}…',
   active: 'Un Pokémon leggendario è apparso in {zone}! Chi è lì può sfidarlo: il primo a batterlo vince una ricompensa.',
   table: 'Metti il segnalino leggendario nella zona indicata.',
-  duration: 4,
   legendary: true,
 );
 

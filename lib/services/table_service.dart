@@ -11,6 +11,9 @@ import 'gym_service.dart';
 import 'item_service.dart';
 import 'party_service.dart';
 
+/// Esito di [TableService.routeTo].
+enum MoveRoute { direct, passage, ticket }
+
 /// Partita da tavolo: turni, azioni, posizione per zona/settore ed eventi di zona.
 ///
 /// Firestore:
@@ -66,6 +69,7 @@ class TableService {
     await seedTypesIfMissing();
     final order = players.docs.map((d) => d.id).toList()..shuffle(_rnd);
     final per = order.length.isOdd ? kActionsOdd : kActionsEven;
+    final links = await partyLinks(party);
 
     final batch = _db.batch();
     for (final d in (await eventsCol(party).get()).docs) {
@@ -87,6 +91,7 @@ class TableService {
       'actionsPerTurn': per,
       'actionsLeft': per,
       'eventMode': manualEvents ? 'manual' : 'auto',
+      'links': links.toList(),
       'startedAt': FieldValue.serverTimestamp(),
     });
     for (final uid in order) {
@@ -143,6 +148,45 @@ class TableService {
       });
     }
     return out;
+  }
+
+  // ------------------------------------------------- collegamenti tra zone
+
+  static String linkKey(String a, String b) => ([a, b]..sort()).join('|');
+
+  static Set<String> get defaultLinks => {for (final l in kDefaultLinks) linkKey(l[0], l[1])};
+
+  /// Collegamenti scelti dal Master per il party (se non ne ha scelti, la proposta di [kDefaultLinks]).
+  static Future<Set<String>> partyLinks(String party) async {
+    final raw = (await PartyService.party(party).get()).data()?['zoneLinks'];
+    return raw is List ? raw.map((e) => e.toString()).toSet() : defaultLinks;
+  }
+
+  /// Collegamenti in uso nella partita (dallo stato; altrimenti la proposta).
+  static Set<String> linksOf(Map<String, dynamic>? state) {
+    final raw = state?['links'];
+    return raw is List ? raw.map((e) => e.toString()).toSet() : defaultLinks;
+  }
+
+  /// Il Master salva i collegamenti: valgono dalla prossima partita e, se la partita è in corso, subito.
+  static Future<void> setLinks(String party, Set<String> links) async {
+    final list = links.toList()..sort();
+    await PartyService.party(party).set({'zoneLinks': list}, SetOptions(merge: true));
+    final st = (await stateRef(party).get()).data();
+    if (st != null && st['started'] == true) await stateRef(party).update({'links': list});
+  }
+
+  /// Come si va da [from] a [to]: stessa zona, collegamento diretto, passaggio di un evento
+  /// (treno/traghetto) o solo con un Biglietto.
+  static MoveRoute routeTo(Map<String, dynamic>? state, List<Map<String, dynamic>> events, String? from, String to) {
+    if (from == null || from == to) return MoveRoute.direct;
+    if (linksOf(state).contains(linkKey(from, to))) return MoveRoute.direct;
+    for (final e in events) {
+      if (e['status'] == 'active' && e['zone'] == from && eventDef(e['defId'] as String).passage) {
+        return MoveRoute.passage;
+      }
+    }
+    return MoveRoute.ticket;
   }
 
   // ------------------------------------------------------ eventi: auto / manuale
@@ -328,6 +372,7 @@ class TableService {
     required String uid,
     required String zone,
     required int sector,
+    bool useTicket = false,
   }) async {
     final spec = zoneSpec(zone);
     if (sector < 1 || sector > spec.sectors) throw Exception('Settore non valido');
@@ -340,7 +385,15 @@ class TableService {
     final cur = me?['pos'] as Map?;
     if (cur?['zone'] == zone && _i(cur?['sector']) == sector) throw Exception('Sei già in questo settore');
     final cost = moveCost(events, cur?['zone'] as String?, zone, shield: shield);
+    var needTicket = false;
+    final route = routeTo((await stateRef(party).get()).data(), events, cur?['zone'] as String?, zone);
+    if (route == MoveRoute.ticket) {
+      if (!useTicket) throw Exception('${spec.name} non è collegata alla tua zona: serve un Biglietto');
+      if ((ItemService.readInventory(me)['biglietto'] ?? 0) <= 0) throw Exception('Non hai Biglietti');
+      needTicket = true;
+    }
     await _spend(party, uid, cost, setPos: {'zone': zone, 'sector': sector});
+    if (needTicket) await ItemService.consume(uid, ItemId.biglietto);
     if (ItemService.isActive(me?['stealthUntil'])) return null; // Passo felpato: niente tracce, trappole o allarmi
     await ItemService.addTrace(party, uid, {
       'kind': 'move',
