@@ -59,6 +59,12 @@ Entrambe le modalità usano lo stesso progetto Firebase (`lib/firebase_options.d
 - **Battaglie.** Funzionano come prima (codice da condividere). Gli eventi attivi nella zona di chi crea la battaglia danno il bonus di danno.
 - Le palestre GPS di Varese esistono solo nella modalità dal vivo.
 
+### Eventi di zona: automatici o manuali
+
+Nel riquadro Master della tab Tavolo c'è l'interruttore **Eventi di zona manuali** (si sceglie prima dell'avvio e si può cambiare durante la partita).
+- **Automatici**: la app pianifica e fa partire gli eventi (come prima). Passando ad automatico a partita in corso, i nuovi eventi vengono pianificati dal giro corrente.
+- **Manuali**: la app non pianifica nulla. Dopo aver pescato la carta, il Master tocca *Inserisci evento*, sceglie l'evento (e la zona per il leggendario) e decide se **annunciarlo** (poi lo fa partire con *Attiva*) o **attivarlo subito**. *Termina* chiude un evento in corso, *Annulla* ritira uno annunciato. Effetti e durata in giri restano quelli di `lib/table/events.dart`; il Radar meteo in manuale vede solo gli eventi già annunciati con una data.
+
 ## Indizi sulla mappa (live e tavolo)
 
 Tab **Party**, scheda "Indizi sulla mappa" (piazzamento, indizi trovati e dichiarati). La **ricerca** sta nella sezione dei movimenti:

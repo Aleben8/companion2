@@ -60,7 +60,7 @@ class TableService {
   // ------------------------------------------------------------- partita
 
   /// Avvia (o riavvia) la partita: ordine dei turni casuale, tutti nell'Hub, eventi pianificati.
-  static Future<void> startGame(String party) async {
+  static Future<void> startGame(String party, {bool manualEvents = false}) async {
     final players = await PartyService.players(party).get();
     if (players.docs.length < 2) throw Exception('Servono almeno 2 giocatori nel party');
     await seedTypesIfMissing();
@@ -86,6 +86,7 @@ class TableService {
       'idx': 0,
       'actionsPerTurn': per,
       'actionsLeft': per,
+      'eventMode': manualEvents ? 'manual' : 'auto',
       'startedAt': FieldValue.serverTimestamp(),
     });
     for (final uid in order) {
@@ -107,19 +108,21 @@ class TableService {
         SetOptions(merge: true),
       );
     }
-    for (final e in _schedule()) {
-      batch.set(eventsCol(party).doc(), e);
+    if (!manualEvents) {
+      for (final e in _schedule()) {
+        batch.set(eventsCol(party).doc(), e);
+      }
     }
     await batch.commit();
     TableClock.round = 1;
   }
 
   /// Sceglie a caso gli eventi e i giri in cui partono.
-  static List<Map<String, dynamic>> _schedule() {
+  static List<Map<String, dynamic>> _schedule({int base = 1}) {
     final pool = [...kZoneEventDefs]..shuffle(_rnd);
     final chosen = pool.take(kEventsPerGame).toList();
     final defs = [...chosen, kLegendaryDef];
-    final starts = [for (var i = 0; i < defs.length; i++) kFirstEventRound + i * kEventGap]..shuffle(_rnd);
+    final starts = [for (var i = 0; i < defs.length; i++) kFirstEventRound - 1 + base + i * kEventGap]..shuffle(_rnd);
     final out = <Map<String, dynamic>>[];
     for (var i = 0; i < defs.length; i++) {
       final d = defs[i];
@@ -141,6 +144,81 @@ class TableService {
     }
     return out;
   }
+
+  // ------------------------------------------------------ eventi: auto / manuale
+
+  /// Giro da cui un evento annunciato a mano "aspetta" il Master (non parte da solo).
+  static const int kManualStart = 9999;
+
+  static bool isManual(Map<String, dynamic>? state) => state?['eventMode'] == 'manual';
+
+  /// Il Master passa da eventi automatici a manuali (e viceversa) durante la partita.
+  /// Auto: pianifica nuovi eventi a partire dal giro corrente. Manuale: toglie quelli non ancora annunciati.
+  /// Gli eventi già in corso restano.
+  static Future<void> setEventMode(String party, {required bool manual}) async {
+    final st = (await stateRef(party).get()).data();
+    if (st == null || st['started'] != true) throw Exception('La partita non è iniziata');
+    final round = _i(st['round'], 1);
+    final batch = _db.batch();
+    for (final d in (await eventsCol(party).get()).docs) {
+      final status = d.data()['status'];
+      if (status == 'scheduled' || (!manual && status == 'announced')) batch.delete(d.reference);
+    }
+    if (!manual) {
+      for (final e in _schedule(base: round)) {
+        batch.set(eventsCol(party).doc(), e);
+      }
+    }
+    batch.update(stateRef(party), {'eventMode': manual ? 'manual' : 'auto'});
+    await batch.commit();
+  }
+
+  /// Manuale: il Master inserisce l'evento della carta pescata. [zone] serve solo per il leggendario.
+  /// Con [activateNow] l'evento parte subito, altrimenti viene solo annunciato.
+  static Future<void> createManualEvent(String party, String defId,
+      {String? zone, required bool activateNow}) async {
+    final st = (await stateRef(party).get()).data();
+    if (st == null || st['started'] != true) throw Exception('La partita non è iniziata');
+    final def = eventDef(defId);
+    final z = def.legendary ? zone : def.zone;
+    if (z == null || z.isEmpty) throw Exception('Scegli la zona');
+    final round = _i(st['round'], 1);
+    final ref = eventsCol(party).doc();
+    await ref.set({
+      'defId': def.id,
+      'zone': z,
+      'name': def.name,
+      'status': 'announced',
+      'announceRound': round,
+      'startRound': kManualStart,
+      'endRound': kManualStart + def.duration - 1,
+      'blocked': <int>[],
+      'claimedBy': <String>[],
+      'legendary': def.legendary,
+      'manual': true,
+      'createdAt': FieldValue.serverTimestamp(),
+    });
+    if (activateNow) await activateEvent(party, ref.id);
+  }
+
+  /// Manuale: fa partire un evento annunciato (applica subito i suoi effetti).
+  static Future<void> activateEvent(String party, String eventId) async {
+    final st = (await stateRef(party).get()).data();
+    final round = _i(st?['round'], 1);
+    final ref = eventsCol(party).doc(eventId);
+    final e = (await ref.get()).data();
+    if (e == null) throw Exception('Evento non trovato');
+    if (e['status'] == 'active') throw Exception('L’evento è già in corso');
+    final def = eventDef(e['defId'] as String);
+    await ref.update({'startRound': round, 'endRound': round + def.duration - 1});
+    await _activate(party, await ref.get());
+    // lo stato resta in sincronia con il giro corrente
+    TableClock.round = round;
+  }
+
+  /// Manuale: chiude subito un evento (in corso o annunciato).
+  static Future<void> endEvent(String party, String eventId) =>
+      eventsCol(party).doc(eventId).update({'status': 'ended'});
 
   // -------------------------------------------------------------- turni
 
@@ -367,8 +445,8 @@ class TableService {
     }
   }
 
-  static Future<void> _activate(String party, QueryDocumentSnapshot<Map<String, dynamic>> d) async {
-    final e = d.data();
+  static Future<void> _activate(String party, DocumentSnapshot<Map<String, dynamic>> d) async {
+    final e = d.data()!;
     final def = eventDef(e['defId'] as String);
     final zone = e['zone'] as String;
     final spec = zoneSpec(zone);

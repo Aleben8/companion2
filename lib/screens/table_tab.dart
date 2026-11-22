@@ -34,6 +34,7 @@ class _TableTabState extends State<TableTab> {
   bool _master = false;
   bool _loading = true;
   bool _busy = false;
+  bool _manualNext = false; // modalità eventi scelta prima dell'avvio
   String? _shield; // zona protetta da un'Ombrello di bioma attivo
 
   Session get _s => context.read<Session>();
@@ -90,7 +91,49 @@ class _TableTabState extends State<TableTab> {
           : 'Verrà sorteggiato l’ordine dei turni, tutti partono dall’Hub e vengono pianificati gli eventi di zona.',
       started ? 'Riavvia' : 'Avvia',
     );
-    if (go) await _run(() => TableService.startGame(_party!), ok: 'Partita avviata!');
+    if (go) await _run(() => TableService.startGame(_party!, manualEvents: _manualNext), ok: 'Partita avviata!');
+  }
+
+  /// Master, eventi manuali: sceglie l'evento della carta pescata (e la zona per il leggendario).
+  Future<void> _addManualEvent() async {
+    final defs = [...kZoneEventDefs, kLegendaryDef];
+    final def = await showDialog<ZoneEventDef>(
+      context: context,
+      builder: (ctx) => SimpleDialog(title: const Text('Quale evento hai pescato?'), children: [
+        for (final d in defs)
+          SimpleDialogOption(
+            onPressed: () => Navigator.pop(ctx, d),
+            child: Text(d.legendary ? d.name : '${d.name} · ${zoneSpec(d.zone).name}'),
+          ),
+      ]),
+    );
+    if (def == null || !mounted) return;
+    String? zone;
+    if (def.legendary) {
+      zone = await showDialog<String>(
+        context: context,
+        builder: (ctx) => SimpleDialog(title: const Text('In quale zona?'), children: [
+          for (final z in kZones.where((z) => z.id != 'hub'))
+            SimpleDialogOption(onPressed: () => Navigator.pop(ctx, z.id), child: Text(z.name)),
+        ]),
+      );
+      if (zone == null || !mounted) return;
+    }
+    final now = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(def.name),
+        content: const Text('Vuoi annunciarlo (parte quando lo attivi tu) o farlo partire subito?'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Annulla')),
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Annuncia')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Attiva ora')),
+        ],
+      ),
+    );
+    if (now == null) return;
+    await _run(() => TableService.createManualEvent(_party!, def.id, zone: zone, activateNow: now),
+        ok: now ? 'Evento attivato' : 'Evento annunciato');
   }
 
   Future<void> _endTurn(Map<String, dynamic> st) async {
@@ -154,7 +197,7 @@ class _TableTabState extends State<TableTab> {
                 _shield = ItemService.shieldZone(uSnap.data);
                 return Column(children: [
                   const SectionTitle('Tavolo'),
-                  if (_master) _masterTools(started),
+                  if (_master) _masterTools(started, st, events),
                   if (!started)
                     const Padding(
                       padding: EdgeInsets.all(24),
@@ -185,7 +228,9 @@ class _TableTabState extends State<TableTab> {
     );
   }
 
-  Widget _masterTools(bool started) {
+  Widget _masterTools(bool started, Map<String, dynamic>? st, List<Map<String, dynamic>> events) {
+    final manual = started ? TableService.isManual(st) : _manualNext;
+    final live = events.where((e) => e['status'] == 'announced' || e['status'] == 'active').toList();
     return DropCard(
       colors: const [Pal.accent, Color(0xFF9C7BE0)],
       label: 'Master',
@@ -195,6 +240,54 @@ class _TableTabState extends State<TableTab> {
           'Solo per preparare la partita: dopo l’avvio tutti giocano alla pari.',
           style: TextStyle(color: Pal.sub, fontSize: 12),
         ),
+        const SizedBox(height: 8),
+        SwitchListTile(
+          contentPadding: EdgeInsets.zero,
+          title: const Text('Eventi di zona manuali', style: TextStyle(fontWeight: FontWeight.w700)),
+          subtitle: Text(
+            manual
+                ? 'Pesca la carta dal mazzo e inserisci tu l’evento.'
+                : 'La app pianifica e fa partire gli eventi da sola.',
+            style: const TextStyle(fontSize: 12),
+          ),
+          value: manual,
+          onChanged: _busy
+              ? null
+              : (v) => started
+                  ? _run(() => TableService.setEventMode(_party!, manual: v),
+                      ok: v ? 'Eventi manuali: li inserisci tu' : 'Eventi automatici ripianificati')
+                  : setState(() => _manualNext = v),
+        ),
+        if (started && manual) ...[
+          DropButton(
+            label: 'Inserisci evento (carta pescata)',
+            icon: Icons.add_circle_outline,
+            colors: Pal.gold,
+            height: 44,
+            onTap: _busy ? null : _addManualEvent,
+          ),
+          for (final e in live)
+            Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: Row(children: [
+                Expanded(
+                  child: Text(
+                    '${e['name']} · ${zoneSpec(e['zone'] as String).name} (${e['status'] == 'active' ? 'in corso' : 'annunciato'})',
+                    style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+                  ),
+                ),
+                if (e['status'] != 'active')
+                  TextButton(
+                    onPressed: _busy ? null : () => _run(() => TableService.activateEvent(_party!, e['id'] as String)),
+                    child: const Text('Attiva'),
+                  ),
+                TextButton(
+                  onPressed: _busy ? null : () => _run(() => TableService.endEvent(_party!, e['id'] as String)),
+                  child: Text(e['status'] == 'active' ? 'Termina' : 'Annulla'),
+                ),
+              ]),
+            ),
+        ],
         const SizedBox(height: 12),
         DropButton(
           label: started ? 'Riavvia la partita' : 'Avvia la partita',
@@ -291,7 +384,9 @@ class _TableTabState extends State<TableTab> {
           final defeated = e['defeatedBy'] != null;
           final when = active
               ? 'Ancora ${_i(e['endRound']) - round + 1} ${_i(e['endRound']) - round + 1 == 1 ? 'giro' : 'giri'}'
-              : (_i(e['startRound']) - round <= 1 ? 'Parte al prossimo giro' : 'Parte tra ${_i(e['startRound']) - round} giri');
+              : (_i(e['startRound']) >= TableService.kManualStart
+                  ? 'Il Master lo attiverà a breve'
+                  : (_i(e['startRound']) - round <= 1 ? 'Parte al prossimo giro' : 'Parte tra ${_i(e['startRound']) - round} giri'));
           return DropCard(
             colors: typeColors(z.type),
             label: active ? 'IN CORSO' : 'IN ARRIVO',
