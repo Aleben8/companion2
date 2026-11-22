@@ -6,6 +6,7 @@ import 'package:provider/provider.dart';
 import '../geo.dart';
 import '../mode.dart';
 import '../items.dart';
+import '../services/battle_service.dart';
 import '../services/item_service.dart';
 import '../services/location_service.dart';
 import '../services/party_service.dart';
@@ -163,11 +164,16 @@ class _InventoryTabState extends State<InventoryTab> {
           if (!await _confirm(item.name, item.description)) break;
           await ItemService.useShield(_uid, item.id);
           if (mounted) snack(context, '${item.name} attivo');
+        case ItemId.pozione:
+        case ItemId.superPozione:
+          // fuori dalla battaglia: cura il Pokémon (i PS restano tra uno scontro e l'altro)
+          final pk = context.read<Session>().pokemonId!;
+          if (!await _confirm(item.name, 'Il tuo Pokémon recupera fino a ${item.id == ItemId.pozione ? kPotionHeal : kSuperPotionHeal} PS.')) break;
+          final healed = await BattleService.healOutsideBattle(uid: _uid, pk: pk, item: item.id);
+          if (mounted) snack(context, '💊 +$healed PS');
         case ItemId.biglietto:
         case ItemId.caramella:
         case ItemId.fune:
-        case ItemId.pozione:
-        case ItemId.superPozione:
         case ItemId.elisir:
         case ItemId.antidoto:
         case ItemId.amuleto:
@@ -472,7 +478,8 @@ class ItemCard extends StatelessWidget {
   }
 }
 
+/// Strumenti che si usano solo in battaglia (Pozione e Super Pozione curano anche fuori).
 bool _battleOnly(ItemDef i) => const {
-      ItemId.caramella, ItemId.fune, ItemId.pozione, ItemId.superPozione,
+      ItemId.caramella, ItemId.fune,
       ItemId.elisir, ItemId.antidoto, ItemId.amuleto, ItemId.guanto,
     }.contains(i.id);

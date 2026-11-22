@@ -59,6 +59,58 @@ class BattleService {
     return {for (final d in s.docs) d.id: d.data()};
   }
 
+  /// PS con cui il Pokémon entra in battaglia: quelli con cui è finito lo scontro precedente
+  /// (`currentHp` sul documento del Pokémon). Se era stato sconfitto (0 PS) ed è qui, il recupero
+  /// è finito o ha usato un Revitalizzante: riparte con tutti i PS. Il capopalestra e il leggendario
+  /// non hanno `currentHp` e partono sempre pieni.
+  static int startHp(Map<String, dynamic> pokemon) {
+    final hp = (pokemon['currentHp'] as num?)?.toInt();
+    if (hp == null || hp <= 0) return kBaseHp;
+    return min(hp, kBaseHp);
+  }
+
+  /// PS attuali fuori dalla battaglia. Con [ko] (sconfitto e ancora in recupero) sono 0.
+  static int currentHp(Map<String, dynamic>? pokemon, {bool ko = false}) =>
+      ko && ((pokemon?['currentHp'] as num?)?.toInt() ?? kBaseHp) <= 0 ? 0 : startHp(pokemon ?? const {});
+
+  /// Pozione / Super Pozione dalla Borsa: cura il Pokémon fuori dalla battaglia.
+  /// Restituisce i PS recuperati.
+  static Future<int> healOutsideBattle({required String uid, required String pk, required ItemId item}) {
+    final heal = switch (item) {
+      ItemId.pozione => kPotionHeal,
+      ItemId.superPozione => kSuperPotionHeal,
+      _ => throw Exception('Questo strumento non cura'),
+    };
+    final uref = ItemService.userRef(uid);
+    final pref = uref.collection('Pokemon').doc(pk);
+    return _db.runTransaction<int>((tx) async {
+      final u = (await tx.get(uref)).data() ?? {};
+      final p = (await tx.get(pref)).data() ?? {};
+      final ko = ItemService.isActive(u['koUntil']);
+      final hp = currentHp(p, ko: ko);
+      if (ko && hp <= 0) throw Exception('Il tuo Pokémon è esausto: serve un Revitalizzante');
+      if (hp >= kBaseHp) throw Exception('Il tuo Pokémon ha già tutti i PS');
+      final inv = ItemService.readInventory(u);
+      if ((inv[item.name] ?? 0) <= 0) throw Exception('Non hai più ${itemDef(item).name}');
+      inv[item.name] = inv[item.name]! - 1;
+      final healed = min(heal, kBaseHp - hp);
+      tx.set(uref, {'inventory': inv}, SetOptions(merge: true));
+      tx.set(pref, {'currentHp': hp + healed}, SetOptions(merge: true));
+      return healed;
+    });
+  }
+
+  /// A fine scontro (vittoria, sconfitta, pareggio o fuga) i PS restano quelli finali.
+  static Future<void> _saveHp(Map? player) async {
+    final uid = player?['uid'] as String?;
+    final pk = player?['pokemon_doc_id'] as String?;
+    if (uid == null || pk == null || uid.startsWith('gym:')) return;
+    await _db.collection('Users').doc(uid).collection('Pokemon').doc(pk).set(
+      {'currentHp': _i(player!['current_hp']).clamp(0, _i(player['max_hp'], kBaseHp))},
+      SetOptions(merge: true),
+    );
+  }
+
   static Map<String, dynamic> _combatant(String uid, String pk,
       Map<String, dynamic> d, Map<String, Map<String, dynamic>> moves) {
     List<String> list(dynamic v) =>
@@ -70,7 +122,7 @@ class BattleService {
       'type': (d['PkmTypePrim'] ?? d['typePrim'] ?? '').toString(),
       'resistenze': list(d['Resistenze']),
       'debolezze': list(d['Debolezze']),
-      'current_hp': kBaseHp,
+      'current_hp': startHp(d),
       'max_hp': kBaseHp,
       'current_energies': kBaseEnergy,
       'max_energies': kBaseEnergy,
@@ -313,11 +365,15 @@ class BattleService {
     const dirs = ['nord', 'nord-est', 'est', 'sud-est', 'sud', 'sud-ovest', 'ovest', 'nord-ovest'];
     final dir = dirs[_rnd.nextInt(dirs.length)];
     final ref = battleRef(battleId);
+    final fighters = <Map>[];
     await _db.runTransaction<void>((tx) async {
       final b = (await tx.get(ref)).data();
       if (b == null || b['status'] != 'in_progress') throw Exception('La battaglia non è in corso');
       final me = Map<String, dynamic>.from(b[playerKey] as Map);
       final opp = Map<String, dynamic>.from(b[playerKey == 'playerA' ? 'playerB' : 'playerA'] as Map);
+      fighters
+        ..clear()
+        ..addAll([me, opp]);
       final meRef = ItemService.userRef(me['uid'] as String);
       final oppRef = ItemService.userRef(opp['uid'] as String);
       final inv = ItemService.readInventory((await tx.get(meRef)).data());
@@ -336,6 +392,10 @@ class BattleService {
             '${me['pokemon_name']} usa la Fune di fuga! La battaglia termina: allontanatevi verso $dir.',
       });
     });
+    // anche fuggendo si resta con i PS che si avevano
+    for (final p in fighters) {
+      await _saveHp(p);
+    }
     return dir;
   }
 
@@ -448,6 +508,15 @@ class BattleService {
     final data = (await ref.get()).data()!;
     final result = computeTurn(data);
     await ref.update(result.updates);
+
+    // Fine scontro: i PS finali restano al Pokémon (non si ricaricano).
+    if (result.status != 'in_progress') {
+      for (final k in ['playerA', 'playerB']) {
+        final p = data[k] as Map?;
+        if (p == null) continue;
+        await _saveHp({...p, 'current_hp': result.updates['$k.current_hp']});
+      }
+    }
 
     // Sconfitta: il Pokémon perdente è esausto per qualche minuto.
     final loserKey = result.status == 'playerA_win'

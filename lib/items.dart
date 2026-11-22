@@ -187,7 +187,7 @@ const List<ItemDef> kItems = [
     'Pozione',
     'Il Pokémon bersaglio recupera $kPotionHeal punti vita. Se usata durante uno scontro, '
         "l'utilizzo richiede un turno.",
-    'Si usa in battaglia (richiede un turno).',
+    'Si usa dalla borsa o in battaglia (richiede un turno).',
     [Color(0xFF3C7BD1), Color(0xFF6CA8F0)],
     category: ItemCategory.battaglia, price: 3, icon: Icons.local_pharmacy, rarity: 3,
   ),
@@ -315,7 +315,7 @@ const List<ItemDef> kItems = [
     ItemId.superPozione,
     'Super Pozione',
     'Il Pokémon recupera $kSuperPotionHeal punti vita. In battaglia richiede un turno.',
-    'Si usa in battaglia (richiede un turno). Si ottiene anche unendo 2 Pozioni.',
+    'Si usa dalla borsa o in battaglia (richiede un turno). Si ottiene anche unendo 2 Pozioni.',
     [Color(0xFF2B5FB8), Color(0xFF6C94E0)],
     category: ItemCategory.battaglia,
     price: 7,

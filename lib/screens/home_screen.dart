@@ -1,8 +1,11 @@
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../constants.dart';
 import '../mode.dart';
+import '../services/battle_service.dart';
+import '../services/item_service.dart';
 import '../services/mode_service.dart';
 import '../services/session.dart';
 import '../theme.dart';
@@ -185,10 +188,68 @@ class _Hero extends StatelessWidget {
                   child: Text('Livello $level',
                       style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w700, fontSize: 12)),
                 ),
+                const _HpPill(),
               ]),
             ]),
           ),
         ]),
+      ),
+    );
+  }
+}
+
+/// PS attuali del Pokémon (restano tra uno scontro e l'altro), in tempo reale.
+class _HpPill extends StatefulWidget {
+  const _HpPill();
+  @override
+  State<_HpPill> createState() => _HpPillState();
+}
+
+class _HpPillState extends State<_HpPill> {
+  // stream creati una volta sola (non a ogni build)
+  late final Stream<DocumentSnapshot<Map<String, dynamic>>> _pokemon;
+  late final Stream<Map<String, dynamic>?> _user;
+
+  @override
+  void initState() {
+    super.initState();
+    final s = context.read<Session>();
+    _pokemon = s.pokemonRef.snapshots();
+    _user = ItemService.watchUser(s.userName!);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return StreamBuilder<Map<String, dynamic>?>(
+      stream: _user,
+      builder: (context, uSnap) => StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+        stream: _pokemon,
+        builder: (context, pSnap) {
+          if (!pSnap.hasData) return const SizedBox.shrink();
+          final ko = ItemService.isActive(uSnap.data?['koUntil']);
+          final hp = BattleService.currentHp(pSnap.data!.data(), ko: ko);
+          final frac = hp / kBaseHp;
+          final color = ko || frac <= 0.25 ? Pal.bad : (frac <= 0.5 ? Pal.warn : Pal.ok);
+          return Container(
+            padding: const EdgeInsets.fromLTRB(8, 5, 12, 5),
+            decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(20)),
+            child: Row(mainAxisSize: MainAxisSize.min, children: [
+              Icon(ko ? Icons.heart_broken : Icons.favorite, size: 16, color: color),
+              const SizedBox(width: 6),
+              Text(ko ? 'Esausto' : 'PS $hp/$kBaseHp',
+                  style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 12)),
+              const SizedBox(width: 8),
+              ClipRRect(
+                borderRadius: BorderRadius.circular(4),
+                child: SizedBox(
+                  width: 42,
+                  height: 6,
+                  child: LinearProgressIndicator(value: frac.clamp(0.0, 1.0), color: color, backgroundColor: Pal.line),
+                ),
+              ),
+            ]),
+          );
+        },
       ),
     );
   }

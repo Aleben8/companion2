@@ -193,7 +193,11 @@ assets/images/...                 sprite e icone originali
 
 ## Regole di battaglia (come nel codice originale)
 
-- Partenza: 40 HP, 15 energie. Tiro d20 per ogni attacco; la statistica (Atk o AtkSpec) × 0,3
+- PS: massimo 40. **I PS restano tra uno scontro e l'altro** (`currentHp` sul documento del Pokémon): si entra in
+  battaglia con i PS con cui si è finito lo scontro precedente (anche dopo una fuga). Dopo una sconfitta il Pokémon è
+  esausto a 0 PS e, finito il recupero (o con un Revitalizzante), riparte pieno. Pozione e Super Pozione curano anche
+  fuori dalla battaglia, dalla Borsa. La home mostra i PS attuali. Capipalestra e leggendari partono sempre pieni.
+- Partenza: 15 energie. Tiro d20 per ogni attacco; la statistica (Atk o AtkSpec) × 0,3
   abbassa le soglie: 1 = Nullo, poi Debole (+0), Medio (+2), Forte (+3), Forte e Imbloccabile (+3, ignora difesa/schivata).
 - Danno = Dmg mossa + bonus categoria + modificatore elementale (+categoria se debolezza, −categoria se resistenza).
 - Costo energia per Dmg 1..7: 1, 2, 4, 7, 9, 10, 11. Difesa: danno dimezzato e +3 energie. Schiva: evita i colpi non imbloccabili.
