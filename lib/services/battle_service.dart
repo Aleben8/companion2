@@ -5,7 +5,6 @@ import 'package:flutter/foundation.dart';
 
 import '../constants.dart';
 import '../items.dart';
-import '../mode.dart';
 import 'gym_service.dart';
 import 'item_service.dart';
 import 'table_service.dart';
@@ -101,9 +100,8 @@ class BattleService {
     return List.generate(n, (_) => chars[_rnd.nextInt(chars.length)]).join();
   }
 
-  /// Al tavolo: bonus di danno dovuti agli eventi attivi nella zona del giocatore.
+  /// Bonus di danno dovuti agli eventi attivi nella zona del giocatore (tavolo e dal vivo).
   static Future<Map<String, dynamic>> _zoneFields(String uid) async {
-    if (!kTableMode) return {};
     final party = await PartyService.actualParty(uid);
     final bonus = await TableService.zoneBonusFor(party, uid);
     return bonus.isEmpty ? {} : {'zoneBonus': bonus};

@@ -8,12 +8,15 @@ import 'package:provider/provider.dart';
 import '../constants.dart';
 import '../geo.dart';
 import '../gyms.dart';
+import '../mode.dart';
 import '../services/battle_service.dart';
 import '../services/gym_service.dart';
 import '../services/item_service.dart';
+import '../services/live_service.dart';
 import '../services/location_service.dart';
 import '../services/party_service.dart';
 import '../services/session.dart';
+import '../table/zones.dart';
 import '../theme.dart';
 import '../widgets/common.dart';
 import '../widgets/clue_search.dart';
@@ -107,12 +110,40 @@ class _GymsTabState extends State<GymsTab> {
         if (mounted) widget.onBattle(id);
       });
 
+  /// Master: tiene premuto sulla mappa per posizionare (o spostare) una zona di gioco.
+  Future<void> _placeZoneAt(LatLng p, Map<String, LiveZone> zones) async {
+    final zone = await showDialog<ZoneSpec>(
+      context: context,
+      builder: (ctx) => SimpleDialog(title: const Text('Quale zona metti qui?'), children: [
+        for (final z in kZones)
+          SimpleDialogOption(
+            onPressed: () => Navigator.pop(ctx, z),
+            child: Text('${z.name}${zones[z.id] == null ? '' : ' (sposta)'}'),
+          ),
+      ]),
+    );
+    if (zone == null || !mounted) return;
+    final r = await showDialog<double>(
+      context: context,
+      builder: (ctx) => SimpleDialog(title: Text('Raggio di ${zone.name}'), children: [
+        for (final r in kZoneRadiusChoices)
+          SimpleDialogOption(
+            onPressed: () => Navigator.pop(ctx, r),
+            child: Text('${r.round()} m${r == (zones[zone.id]?.radius ?? kDefaultZoneRadius) ? '  ✓' : ''}'),
+          ),
+      ]),
+    );
+    if (r == null) return;
+    await _run(() => LiveService.setZone(_party!, zone.id, p.latitude, p.longitude, r), ok: '${zone.name} posizionata');
+  }
+
   // ------------------------------------------------------------------ UI
 
-  Widget _map(List<QueryDocumentSnapshot<Map<String, dynamic>>> docs, Position? pos, Map badges) {
-    final pts = docs
-        .map((d) => LatLng((d['lat'] as num).toDouble(), (d['lng'] as num).toDouble()))
-        .toList();
+  Widget _map(List<QueryDocumentSnapshot<Map<String, dynamic>>> docs, Position? pos, Map badges, Map<String, LiveZone> zones) {
+    final pts = [
+      ...docs.map((d) => LatLng((d['lat'] as num).toDouble(), (d['lng'] as num).toDouble())),
+      ...zones.values.map((z) => LatLng(z.lat, z.lng)),
+    ];
     final center = pts.isEmpty
         ? const LatLng(45.8190, 8.8250) // centro di Varese
         : LatLng(
@@ -124,13 +155,29 @@ class _GymsTabState extends State<GymsTab> {
       child: ClipRRect(
         borderRadius: BorderRadius.circular(16),
         child: FlutterMap(
-          key: ValueKey(docs.length),
-          options: MapOptions(initialCenter: center, initialZoom: 16),
+          key: ValueKey('${docs.length}/${zones.length}'),
+          options: MapOptions(
+            initialCenter: center,
+            initialZoom: 16,
+            onLongPress: _master && !_busy ? (_, p) => _placeZoneAt(p, zones) : null,
+          ),
           children: [
             TileLayer(
               urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
               userAgentPackageName: 'it.companion2.app',
             ),
+            // zone di gioco (il tavolo dal vivo)
+            CircleLayer(circles: [
+              for (final z in zones.values)
+                CircleMarker(
+                  point: LatLng(z.lat, z.lng),
+                  radius: z.radius,
+                  useRadiusInMeter: true,
+                  color: typeColors(zoneSpec(z.id).type).first.withOpacity(0.12),
+                  borderColor: typeColors(zoneSpec(z.id).type).first,
+                  borderStrokeWidth: 3,
+                ),
+            ]),
             CircleLayer(circles: [
               for (final d in docs)
                 CircleMarker(
@@ -143,6 +190,25 @@ class _GymsTabState extends State<GymsTab> {
                 ),
             ]),
             MarkerLayer(markers: [
+              for (final z in zones.values)
+                Marker(
+                  point: LatLng(z.lat, z.lng),
+                  width: 130,
+                  height: 26,
+                  child: Center(
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                      decoration: BoxDecoration(
+                        color: Colors.white.withOpacity(0.9),
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(color: typeColors(zoneSpec(z.id).type).first, width: 1.5),
+                      ),
+                      child: Text(zoneSpec(z.id).name,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w800, color: Pal.ink)),
+                    ),
+                  ),
+                ),
               for (final d in docs)
                 Marker(
                   point: LatLng((d['lat'] as num).toDouble(), (d['lng'] as num).toDouble()),
@@ -316,7 +382,16 @@ class _GymsTabState extends State<GymsTab> {
                 return Column(children: [
                   const SectionTitle('Mappa'),
                   const SizedBox(height: 6),
-                  _map(docs, pos, badges),
+                  StreamBuilder<Map<String, LiveZone>>(
+                    stream: LiveService.watchZones(_party!),
+                    builder: (context, zSnap) => _map(docs, pos, badges, zSnap.data ?? const {}),
+                  ),
+                  if (_master)
+                    const Padding(
+                      padding: EdgeInsets.only(top: 4),
+                      child: Text('Master: tieni premuto sulla mappa per posizionare una zona.',
+                          style: TextStyle(color: Pal.sub, fontSize: 12)),
+                    ),
                   const SizedBox(height: 8),
                   ClueSearchButton(party: _party!, uid: _s.userName!),
                   const SizedBox(height: 8),

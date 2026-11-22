@@ -16,7 +16,7 @@ import '../widgets/drop.dart';
 /// Emporio e crafting (si apre dalla Borsa).
 ///  - Al tavolo: ogni zona ha il suo emporio (assortimento base + la protezione del bioma);
 ///    l'Hub ha il mercato centrale con tutti gli strumenti.
-///  - Dal vivo: si compra vicino a una palestra (entro [kGymRadiusMeters]).
+///  - Dal vivo: dentro una zona come al tavolo, altrimenti vicino a una palestra (entro [kGymRadiusMeters]).
 Future<void> showShop(BuildContext context, String uid) => showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
@@ -58,8 +58,9 @@ class _ShopBodyState extends State<_ShopBody> {
 
   /// (titolo, assortimento, motivo per cui è chiuso)
   ({String title, List<ItemDef> stock, String? closed}) _shop(Map<String, dynamic>? user, Position? pos) {
-    if (kTableMode) {
-      final zone = (user?['pos'] as Map?)?['zone'] as String?;
+    final zone = (user?['pos'] as Map?)?['zone'] as String?;
+    // emporio di zona: al tavolo sempre, dal vivo quando il GPS ti mette in una zona
+    if (kTableMode || zone != null) {
       if (zone == null) return (title: 'Emporio', stock: const [], closed: 'Non sei ancora sulla mappa.');
       final spec = zoneSpec(zone);
       if (zone == 'hub') return (title: 'Mercato centrale · ${spec.name}', stock: _generalStock, closed: null);
@@ -83,7 +84,8 @@ class _ShopBodyState extends State<_ShopBody> {
     return (
       title: 'Emporio',
       stock: const [],
-      closed: 'Gli empori sono presso le palestre. La più vicina (${nearest?.name}) è a ${formatDistance(best)}.',
+      closed: 'Gli empori sono nelle zone di gioco e presso le palestre. '
+          'La palestra più vicina (${nearest?.name}) è a ${formatDistance(best)}.',
     );
   }
 

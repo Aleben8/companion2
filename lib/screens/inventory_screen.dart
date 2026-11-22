@@ -130,10 +130,10 @@ class _InventoryTabState extends State<InventoryTab> {
           await ItemService.useStealth(_uid);
           if (mounted) snack(context, 'Passo felpato attivo');
         case ItemId.clessidra:
-          if (!await _confirm('Clessidra', 'Ottieni subito altre azioni per questo turno.')) break;
+          if (!await _confirm('Clessidra', kTableMode ? 'Ottieni subito altre azioni per questo turno.' : 'Azzeri subito tutte le attese.')) break;
           final partyC = await _party();
           await ItemService.useHourglass(_uid, partyC);
-          if (mounted) snack(context, '⏳ Azioni aggiunte al turno');
+          if (mounted) snack(context, kTableMode ? '⏳ Azioni aggiunte al turno' : '⏳ Attese azzerate');
         case ItemId.chiave:
           final partyK = await _party();
           final pos = (await ItemService.userRef(_uid).get()).data()?['pos'] as Map?;
@@ -160,7 +160,7 @@ class _InventoryTabState extends State<InventoryTab> {
         case ItemId.tutaIgnifuga:
         case ItemId.zattera:
         case ItemId.parafulmine:
-          if (!await _confirm(item.name, '${item.description}')) break;
+          if (!await _confirm(item.name, item.description)) break;
           await ItemService.useShield(_uid, item.id);
           if (mounted) snack(context, '${item.name} attivo');
         case ItemId.biglietto:

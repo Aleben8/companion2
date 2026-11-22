@@ -20,20 +20,26 @@ flutter run -d chrome    # prova in locale
 Se hai già un progetto con `android/` e `ios/` generati, copia sopra `lib/`, `assets/`, `web/`, `.github/`,
 `pubspec.yaml` e `analysis_options.yaml`, poi `flutter pub get`.
 
-## Due modalità: Tavolo (predefinita) e Dal vivo
+## Due modalità: Tavolo e Dal vivo (le sceglie il Master)
 
-Un'unica base di codice, due versioni scelte in compilazione:
+Un'unica app e un unico deploy. La modalità è una proprietà del **party**: il Master la sceglie in
+*Impostazioni > Gestione Party > Modalità di gioco* (`Party/{codice}.mode` = `tavolo` | `live`) e la app di tutti i
+giocatori del party passa subito all'altra modalità. Si può cambiare **anche a partita in corso**: la partita si adatta
+(verso il live l'orologio riparte dal giro corrente e trappole/azioni perse diventano attese; verso il tavolo si crea
+l'ordine dei turni e chi non è in una zona torna all'Hub).
+
+Finché il Master non sceglie, vale la modalità predefinita della build:
 
 ```bash
-flutter run -d chrome                                  # TAVOLO
-flutter run -d chrome --dart-define=MODE=live          # DAL VIVO (GPS)
-flutter build web --release --base-href /companion2/   # build Tavolo (quella del deploy.yml)
+flutter run -d chrome                                  # predefinita: TAVOLO
+flutter run -d chrome --dart-define=MODE=live          # predefinita: DAL VIVO
+flutter build web --release --base-href /companion2/   # build del deploy.yml
 ```
 
 ### Firestore (uno solo)
 Entrambe le modalità usano lo stesso progetto Firebase (`lib/firebase_options.dart`), quindi non c'è nulla da configurare.
-- Per non mescolare i dati usa un **codice party diverso** per il tavolo (per esempio `TAVOLO1`) e uno per il gioco dal vivo (`SecretBB`).
-  I dati della partita stanno tutti sotto `Party/{codice}/...`, quindi i due giochi restano separati.
+- I dati della partita stanno tutti sotto `Party/{codice}/...`: per giocare in parallelo un tavolo e un gioco dal vivo
+  usa due party diversi (per esempio `TAVOLO1` e `SecretBB`).
 - I giocatori (`Users/...`) e le loro mosse sono in comune. Il tavolo aggiunge ai giocatori i campi `pos`, `trappedSkip` e `actionPenalty`.
   All'avvio di una partita gli effetti temporanei vengono azzerati.
 - Chi avvia la partita ha `isMaster: true` in `Party/{codice}/players/{nome}` (si imposta dalla console). Poi gioca come tutti.
@@ -74,6 +80,29 @@ Per andare in una zona **non collegata**:
 - **Eventi di passaggio**: *Treno straordinario* (Hub) e *Traghetto dei relitti* (Isola). Finché sono attivi, chi è in quella zona raggiunge qualsiasi zona senza Biglietto. Si aggiungono a mano come tutti gli altri eventi, o escono nel sorteggio automatico.
 
 Tutti gli eventi di zona ora durano 2 giri.
+
+## Il tavolo dal vivo
+
+Tutto quello che c'è al tavolo (zone, settori, eventi di zona, empori di zona, protezioni di bioma, Radar meteo,
+Chiave, leggendario, fascia eventi in cima alla home) funziona anche dal vivo. Cambia solo come si traducono
+posizione, tempo e azioni. Codice: `lib/services/live_service.dart`, regole in fondo a `lib/mode.dart`.
+
+- **Zone = cerchi sulla mappa.** Il Master le posiziona dalla tab **Mappa**: tiene premuto sulla mappa e sceglie
+  zona e raggio, oppure va sul posto e preme **Qui** nel riquadro Master. Il raggio si cambia da lì (predefinito 80 m).
+  Dati: `Party/{codice}.liveZones`. Per avviare la partita servono tutte le 8 zone.
+- **Settori = 4 spicchi** del cerchio: 1 Nord, 2 Est, 3 Sud, 4 Ovest. Zona e settore li ricava il GPS e li scrive
+  in `Users/{uid}.pos`, lo stesso campo del tavolo (fuori dai cerchi `pos` non c'è).
+- **Giri = minuti.** Il giro avanza da solo ogni N minuti (`roundMinutes`, il Master sceglie 5–30, predefinito 10).
+  Lo fa avanzare il primo telefono aperto che si accorge della scadenza (transazione: uno solo). Se nessuno ha la app
+  aperta l'orologio si ferma e alla riapertura recupera i giri persi. Gli effetti "in giri" valgono in entrambe le modalità.
+- **Niente turni, le azioni diventano attese** (`busyUntil`, `searchReadyAt` su `Users/{uid}`):
+  - *Cerca indizi*: una volta ogni `kLiveSearchCooldownMinutes` (2) minuti; non si cerca in un settore bloccato.
+  - *Entrare* in una zona con bufera/eruzione: `kLiveEnterWaitMinutes` (1) minuto di attesa per ogni azione extra.
+  - *Azioni perse* (eruzione con te nella zona): `kLivePenaltyMinutes` (2) minuti per azione.
+  - Durante un'attesa non si cerca, non si compra e non si prendono gli strumenti degli eventi. La **Clessidra** le azzera.
+- **Collegamenti tra zone, Biglietto, Treno e Traghetto non esistono dal vivo** (ci si sposta a piedi).
+- **Emporio**: dentro una zona è quello della zona (Hub = mercato centrale), fuori dalle zone resta quello delle palestre.
+- **Nebbia**: il Radar non vede chi è (secondo il GPS) nella Giungla con la nebbia.
 
 ## Indizi sulla mappa (live e tavolo)
 
@@ -141,7 +170,9 @@ lib/
   items.dart                      definizione e regole degli strumenti
   gyms.dart                       palestre, profili dei tipi, parametri
   widgets/badge_row.dart          badge delle palestre
-  mode.dart                       modalità (tavolo/live) e regole del tavolo
+  mode.dart                       modalità (tavolo/live), regole del tavolo e del live
+  services/mode_service.dart      segue la modalità scelta dal Master per il party
+  services/live_service.dart      zone GPS, settori, attese del live
   table/                          zone, eventi di zona, tabella dei tipi
   services/table_service.dart     turni, spostamenti, eventi, leggendario
   services/clue_service.dart      indizi: piazzamento, ricerca, dichiarazione
@@ -226,15 +257,15 @@ Tutte le regole numeriche sono in `lib/items.dart` (costanti `k...`).
 | Categoria | Strumenti |
 |---|---|
 | Base | Repellente, Caramella Rara, Fune di fuga, Trappola, Pozione, Calmanella, Revitalizzante, Radar |
-| Esplorazione | **Lente** (tracce: zone già battute e direzioni degli altri), **Sensore** (quanti indizi nascosti qui), **Allarme** (come la Trappola ma avvisa in segreto, non blocca), **Radar meteo** (eventi dei prossimi 2 giri, solo tavolo), **Passo felpato** (ignora Trappole/Allarmi, nessuna traccia, invisibile al Radar), **Clessidra** (azioni extra nel turno, solo tavolo), **Chiave** (sblocca un settore chiuso da frana/marea, solo tavolo) |
+| Esplorazione | **Lente** (tracce: zone già battute e direzioni degli altri), **Sensore** (quanti indizi nascosti qui), **Allarme** (come la Trappola ma avvisa in segreto, non blocca), **Radar meteo** (eventi dei prossimi 2 giri), **Passo felpato** (ignora Trappole/Allarmi, nessuna traccia, invisibile al Radar), **Clessidra** (al tavolo azioni extra nel turno, dal vivo azzera le attese), **Chiave** (sblocca un settore chiuso da frana/marea) |
 | Battaglia | **Elisir** (+5 energie), **Super Pozione** (+20 PS), **Antidoto** (toglie DOT e malus), **Amuleto** (blocca il primo status, da dichiarare prima del 1º turno), **Guanto** (+2 danno per uno scontro, da dichiarare prima del 1º turno) |
-| Protezioni di bioma (solo tavolo) | Corda da scalata (Canyon), Bussola (Giungla), Tuta da neve (Regione innevata), Tuta ignifuga (Vulcano), Zattera (Isola), Parafulmine (Colline): per 2 giri annullano gli effetti dell'evento di quella zona (costo extra, settori bloccati, azioni perse, nebbia per il tuo Radar, bonus di tipo) |
+| Protezioni di bioma | Corda da scalata (Canyon), Bussola (Giungla), Tuta da neve (Regione innevata), Tuta ignifuga (Vulcano), Zattera (Isola), Parafulmine (Colline): per 2 giri annullano gli effetti dell'evento di quella zona (costo extra, settori bloccati, azioni perse, nebbia per il tuo Radar, bonus di tipo) |
 
 Il Radar meteo sostituisce il Telescopio.
 
 **Emporio** (bottone nella Borsa)
 - Tavolo: ogni zona ha il suo emporio (Pozione, Fune, Antidoto, Elisir, Sensore + la protezione del suo bioma); l'Hub è il mercato centrale con tutti gli strumenti. Serve essere nella zona.
-- Dal vivo: si compra entro `kGymRadiusMeters` da una palestra (tutti gli strumenti non da tavolo).
+- Dal vivo: dentro una zona come al tavolo; fuori dalle zone si compra entro `kGymRadiusMeters` da una palestra (tutti gli strumenti tranne il Biglietto).
 - Prezzi: `price` di ogni `ItemDef`.
 
 **Come si ottengono**
@@ -310,5 +341,5 @@ Dati Firestore aggiunti: `Party/{codice}/gyms/{gymId}` (palestra + capopalestra)
 - Un tiro di 1 (Nullo) fa davvero 0 danni.
 - Il numero del turno nel log parte da 1.
 
-> Nota: questa versione non è stata compilata né provata (nell'ambiente di lavoro non c'è Flutter).
-> Se `flutter analyze` segnala qualcosa, sono quasi certamente piccole correzioni di sintassi.
+> Nota: il codice passa `flutter analyze` e `flutter build web`; il calcolo di zona e settore dal GPS ha un test
+> (`flutter test`). Il gioco dal vivo va ancora provato sul campo.

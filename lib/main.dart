@@ -6,6 +6,7 @@ import 'firebase_options.dart';
 import 'screens/home_screen.dart';
 import 'screens/login_screen.dart';
 import 'services/location_service.dart';
+import 'services/mode_service.dart';
 import 'services/session.dart';
 import 'theme.dart';
 
@@ -16,6 +17,7 @@ Future<void> main() async {
     providers: [
       ChangeNotifierProvider(create: (_) => Session()),
       ChangeNotifierProvider(create: (_) => LocationService()),
+      ChangeNotifierProvider(create: (_) => ModeService()),
     ],
     child: const CompanionApp(),
   ));

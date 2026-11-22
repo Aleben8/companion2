@@ -4,7 +4,6 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
-import '../constants.dart';
 import '../geo.dart';
 import '../items.dart';
 import '../mode.dart';
@@ -91,7 +90,8 @@ class StatusBanner extends StatelessWidget {
         final rep = u['repellentUntil'];
         final ko = u['koUntil'];
         final trapUntil = u['trappedUntil'];
-        final skip = ((u['trappedSkip'] as num?) ?? 0).toInt();
+        final skip = kTableMode ? ((u['trappedSkip'] as num?) ?? 0).toInt() : 0;
+        final busy = kTableMode ? null : u['busyUntil']; // dal vivo: attesa al posto delle azioni
 
         Future<void> useRope() async {
           try {
@@ -122,6 +122,9 @@ class StatusBanner extends StatelessWidget {
             _chip(Icons.warning_amber_rounded, const Color(0xFFF2A74B), 'Sei in una Trappola!',
                 _time(trapUntil, const Color(0xFFC77D1A)),
                 action: rope),
+          if (ItemService.isActive(busy))
+            _chip(Icons.hourglass_top, Pal.bad, 'In attesa: non puoi cercare, comprare o prendere strumenti',
+                _time(busy, Pal.bad)),
         ]);
       },
     );
@@ -144,12 +147,18 @@ class _GameWatcherState extends State<GameWatcher> {
   final Set<String> _handling = {};
   final Set<String> _seenEvents = {};
   late final String _uid;
+  late final LocationService _loc;
+  bool _gps = false; // GPS avviato da questo osservatore (modalità dal vivo)
 
   @override
   void initState() {
     super.initState();
     _uid = context.read<Session>().userName!;
-    if (!kTableMode) context.read<LocationService>().start(_uid);
+    _loc = context.read<LocationService>();
+    if (!kTableMode) {
+      _gps = true;
+      _loc.start(_uid);
+    }
     _userSub = ItemService.watchUser(_uid).listen((u) {
       final p = u?['actualParty'];
       final party = p is String && p.isNotEmpty ? p : null;
@@ -165,22 +174,26 @@ class _GameWatcherState extends State<GameWatcher> {
     _traps = [];
     _alarms = [];
     if (party == null) return;
-    if (!kTableMode) _trapSub = PartyService.party(party)
-        .collection('traps')
-        .where('active', isEqualTo: true)
-        .snapshots()
-        .listen((s) {
-      _traps = s.docs;
-      _checkTraps(context.read<LocationService>());
-    });
-    if (!kTableMode) _alarmSub = PartyService.party(party)
-        .collection('alarms')
-        .where('active', isEqualTo: true)
-        .snapshots()
-        .listen((s) {
-      _alarms = s.docs;
-      _checkTraps(context.read<LocationService>());
-    });
+    if (!kTableMode) {
+      _trapSub = PartyService.party(party)
+          .collection('traps')
+          .where('active', isEqualTo: true)
+          .snapshots()
+          .listen((s) {
+        _traps = s.docs;
+        _checkTraps(context.read<LocationService>());
+      });
+    }
+    if (!kTableMode) {
+      _alarmSub = PartyService.party(party)
+          .collection('alarms')
+          .where('active', isEqualTo: true)
+          .snapshots()
+          .listen((s) {
+        _alarms = s.docs;
+        _checkTraps(context.read<LocationService>());
+      });
+    }
     _eventSub = PartyService.party(party)
         .collection('events')
         .orderBy('at', descending: true)
@@ -269,6 +282,8 @@ class _GameWatcherState extends State<GameWatcher> {
     _trapSub?.cancel();
     _alarmSub?.cancel();
     _eventSub?.cancel();
+    // passando al tavolo (o uscendo) il GPS non serve più
+    if (_gps) _loc.stop();
     super.dispose();
   }
 

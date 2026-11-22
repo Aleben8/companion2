@@ -9,12 +9,15 @@ import '../table/type_chart.dart';
 import '../table/zones.dart';
 import 'gym_service.dart';
 import 'item_service.dart';
+import 'live_service.dart';
 import 'party_service.dart';
 
 /// Esito di [TableService.routeTo].
 enum MoveRoute { direct, passage, ticket }
 
-/// Partita da tavolo: turni, azioni, posizione per zona/settore ed eventi di zona.
+/// Partita a zone: turni, azioni, posizione per zona/settore ed eventi di zona.
+/// La stessa partita si gioca anche dal vivo (vedi [LiveService]): niente turni, il giro avanza
+/// da solo ogni N minuti e la posizione arriva dal GPS.
 ///
 /// Firestore:
 ///   Party/{codice}/table/state        -> { started, round, order[], idx, actionsPerTurn, actionsLeft }
@@ -62,14 +65,25 @@ class TableService {
 
   // ------------------------------------------------------------- partita
 
-  /// Avvia (o riavvia) la partita: ordine dei turni casuale, tutti nell'Hub, eventi pianificati.
+  /// Avvia (o riavvia) la partita nella modalità corrente del party.
+  /// Tavolo: ordine dei turni casuale, tutti nell'Hub. Dal vivo: parte l'orologio dei giri e
+  /// la posizione arriva dal GPS (servono tutte le zone posizionate sulla mappa).
+  /// In entrambi i casi gli eventi di zona vengono pianificati.
   static Future<void> startGame(String party, {bool manualEvents = false}) async {
+    final live = !kTableMode;
     final players = await PartyService.players(party).get();
     if (players.docs.length < 2) throw Exception('Servono almeno 2 giocatori nel party');
+    if (live) {
+      final miss = LiveService.missing(await LiveService.zones(party));
+      if (miss.isNotEmpty) {
+        throw Exception('Posiziona prima tutte le zone sulla mappa (mancano: ${miss.map((z) => z.name).join(', ')})');
+      }
+    }
     await seedTypesIfMissing();
     final order = players.docs.map((d) => d.id).toList()..shuffle(_rnd);
     final per = order.length.isOdd ? kActionsOdd : kActionsEven;
     final links = await partyLinks(party);
+    final minutes = await roundMinutes(party);
 
     final batch = _db.batch();
     for (final d in (await eventsCol(party).get()).docs) {
@@ -92,13 +106,18 @@ class TableService {
       'actionsLeft': per,
       'eventMode': manualEvents ? 'manual' : 'auto',
       'links': links.toList(),
+      'roundMinutes': minutes,
+      'roundStartedAt': Timestamp.now(),
       'startedAt': FieldValue.serverTimestamp(),
     });
     for (final uid in order) {
       batch.set(
         ItemService.userRef(uid),
         {
-          'pos': {'zone': 'hub', 'sector': 1},
+          // dal vivo la posizione la scrive il GPS appena entri in una zona
+          'pos': live ? FieldValue.delete() : {'zone': 'hub', 'sector': 1},
+          'busyUntil': FieldValue.delete(),
+          'searchReadyAt': FieldValue.delete(),
           'trappedSkip': 0,
           'actionPenalty': 0,
           // effetti di partite precedenti (i giri ripartono da 1)
@@ -122,9 +141,14 @@ class TableService {
     TableClock.round = 1;
   }
 
+  /// Eventi disponibili nella modalità corrente: dal vivo niente treno/traghetto
+  /// (ci si sposta a piedi, i collegamenti tra zone non ci sono).
+  static List<ZoneEventDef> get availableEvents =>
+      [for (final d in kZoneEventDefs) if (kTableMode || !d.passage) d];
+
   /// Sceglie a caso gli eventi e i giri in cui partono.
   static List<Map<String, dynamic>> _schedule({int base = 1}) {
-    final pool = [...kZoneEventDefs]..shuffle(_rnd);
+    final pool = [...availableEvents]..shuffle(_rnd);
     final chosen = pool.take(kEventsPerGame).toList();
     final defs = [...chosen, kLegendaryDef];
     final starts = [for (var i = 0; i < defs.length; i++) kFirstEventRound - 1 + base + i * kEventGap]..shuffle(_rnd);
@@ -174,6 +198,126 @@ class TableService {
     await PartyService.party(party).set({'zoneLinks': list}, SetOptions(merge: true));
     final st = (await stateRef(party).get()).data();
     if (st != null && st['started'] == true) await stateRef(party).update({'links': list});
+  }
+
+  // ------------------------------------------------------ modalità e orologio
+
+  /// Il Master cambia modalità (anche a partita in corso). Lo stato si adatta:
+  ///  - verso il live: l'orologio riparte dal giro corrente, trappole e azioni perse diventano attese;
+  ///  - verso il tavolo: se manca, si crea l'ordine dei turni; chi non è in una zona torna all'Hub.
+  static Future<void> switchMode(String party, String mode) async {
+    // AppMode.current lo aggiorna ModeService quando arriva il cambio (così la home si ricostruisce)
+    await PartyService.setMode(party, mode);
+    final st = (await stateRef(party).get()).data();
+    if (st == null || st['started'] != true) return;
+    final players = (await PartyService.players(party).get()).docs.map((d) => d.id).toList();
+    final batch = _db.batch();
+    if (mode == kModeLive) {
+      batch.update(stateRef(party), {
+        'roundMinutes': _i(st['roundMinutes'], await roundMinutes(party)),
+        'roundStartedAt': Timestamp.now(),
+      });
+      // treno e traghetto non servono a piedi
+      for (final d in (await eventsCol(party).get()).docs) {
+        final e = d.data();
+        if (e['status'] != 'ended' && eventDef(e['defId'] as String).passage) batch.update(d.reference, {'status': 'ended'});
+      }
+      for (final uid in players) {
+        final u = (await ItemService.userRef(uid).get()).data() ?? {};
+        final skip = _i(u['trappedSkip']), pen = _i(u['actionPenalty']);
+        batch.set(
+            ItemService.userRef(uid),
+            {
+              'trappedSkip': 0,
+              'actionPenalty': 0,
+              if (skip > 0) 'trappedUntil': Timestamp.fromDate(DateTime.now().add(const Duration(minutes: kTrapPenaltyMinutes))),
+              if (pen > 0) ...LiveService.addBusy(u, pen * kLivePenaltyMinutes),
+            },
+            SetOptions(merge: true));
+      }
+    } else {
+      final order = st['order'] is List ? List<String>.from(st['order'] as List) : <String>[];
+      order.removeWhere((p) => !players.contains(p));
+      for (final p in players) {
+        if (!order.contains(p)) order.add(p);
+      }
+      if (st['order'] is! List) order.shuffle(_rnd);
+      final per = order.length.isOdd ? kActionsOdd : kActionsEven;
+      batch.update(stateRef(party), {
+        'order': order,
+        'idx': _i(st['idx']) < order.length ? _i(st['idx']) : 0,
+        'actionsPerTurn': per,
+        if (st['actionsLeft'] == null || st['order'] is! List) 'actionsLeft': per,
+      });
+      for (final uid in players) {
+        final u = (await ItemService.userRef(uid).get()).data() ?? {};
+        if (u['pos'] is! Map) batch.set(ItemService.userRef(uid), {'pos': {'zone': 'hub', 'sector': 1}}, SetOptions(merge: true));
+      }
+    }
+    await batch.commit();
+  }
+
+  /// Durata di un giro dal vivo, scelta dal Master.
+  static Future<int> roundMinutes(String party) async {
+    final v = (await PartyService.party(party).get()).data()?['roundMinutes'];
+    return v is num && v > 0 ? v.toInt() : kDefaultRoundMinutes;
+  }
+
+  /// Il Master cambia la durata del giro: vale subito (se la partita è in corso) e per le prossime.
+  static Future<void> setRoundMinutes(String party, int minutes) async {
+    await PartyService.party(party).set({'roundMinutes': minutes}, SetOptions(merge: true));
+    final st = (await stateRef(party).get()).data();
+    if (st != null && st['started'] == true) await stateRef(party).update({'roundMinutes': minutes});
+  }
+
+  /// Quando parte il prossimo giro dal vivo (null se l'orologio non c'è).
+  static DateTime? nextRoundAt(Map<String, dynamic>? st) {
+    final at = st?['roundStartedAt'];
+    if (at is! Timestamp) return null;
+    return at.toDate().add(Duration(minutes: _i(st!['roundMinutes'], kDefaultRoundMinutes)));
+  }
+
+  /// Dal vivo: se il giro è scaduto lo fa avanzare (una transazione, quindi lo fa un solo telefono)
+  /// e aggiorna gli eventi di zona. Restituisce il nuovo giro, o null se non è cambiato.
+  static Future<int?> tickLive(String party) async {
+    final ref = stateRef(party);
+    final round = await _db.runTransaction<int?>((tx) async {
+      final s = (await tx.get(ref)).data();
+      if (s == null || s['started'] != true) return null;
+      final at = s['roundStartedAt'];
+      if (at is! Timestamp) {
+        tx.update(ref, {'roundStartedAt': Timestamp.now()});
+        return null;
+      }
+      final mins = _i(s['roundMinutes'], kDefaultRoundMinutes);
+      final n = DateTime.now().difference(at.toDate()).inSeconds ~/ (mins * 60);
+      if (n <= 0) return null;
+      final r = _i(s['round'], 1) + n;
+      tx.update(ref, {
+        'round': r,
+        'roundStartedAt': Timestamp.fromDate(at.toDate().add(Duration(minutes: mins * n))),
+      });
+      return r;
+    });
+    if (round == null) return null;
+    TableClock.round = round;
+    await advanceEvents(party, round);
+    return round;
+  }
+
+  /// Dal vivo: il GPS ha cambiato zona/settore. Entrare in una zona con bufera/eruzione costa un'attesa.
+  static Future<void> updateLivePos(String uid, Map<String, dynamic>? pos, {String? party}) async {
+    final ref = ItemService.userRef(uid);
+    final me = (await ref.get()).data();
+    final cur = me?['pos'] as Map?;
+    if (cur?['zone'] == pos?['zone'] && _i(cur?['sector']) == _i(pos?['sector'])) return;
+    final update = <String, dynamic>{'pos': pos ?? FieldValue.delete()};
+    final zone = pos?['zone'] as String?;
+    if (party != null && zone != null && cur?['zone'] != zone && ItemService.shieldZone(me) != zone) {
+      final extra = moveCost(await activeEvents(party), cur?['zone'] as String?, zone) - kMoveActionCost;
+      if (extra > 0) update.addAll(LiveService.addBusy(me, extra * kLiveEnterWaitMinutes));
+    }
+    await ref.set(update, SetOptions(merge: true));
   }
 
   /// Come si va da [from] a [to]: stessa zona, collegamento diretto, passaggio di un evento
@@ -463,7 +607,7 @@ class TableService {
 
   /// Bonus di danno per tipo di mossa nella zona del giocatore (chiavi in minuscolo).
   static Future<Map<String, int>> zoneBonusFor(String? party, String uid) async {
-    if (!kTableMode || party == null) return {};
+    if (party == null) return {};
     final user = (await ItemService.userRef(uid).get()).data();
     final pos = user?['pos'] as Map?;
     final zone = pos?['zone'];
@@ -522,8 +666,12 @@ class TableService {
         final user = (await ItemService.userRef(p.id).get()).data();
         final pos = user?['pos'] as Map?;
         if (pos?['zone'] == zone && ItemService.shieldZone(user) != zone) {
-          await ItemService.userRef(p.id)
-              .set({'actionPenalty': FieldValue.increment(def.actionPenalty)}, SetOptions(merge: true));
+          await ItemService.userRef(p.id).set(
+              kTableMode
+                  ? {'actionPenalty': FieldValue.increment(def.actionPenalty)}
+                  // dal vivo le azioni perse diventano un'attesa
+                  : LiveService.addBusy(user, def.actionPenalty * kLivePenaltyMinutes),
+              SetOptions(merge: true));
         }
       }
     }
@@ -541,6 +689,7 @@ class TableService {
       final def = eventDef(e['defId'] as String);
       if (!def.claimItem) throw Exception('Questo evento non regala strumenti');
       if ((u['pos'] as Map?)?['zone'] != e['zone']) throw Exception('Devi essere nella zona dell’evento');
+      if (!kTableMode) LiveService.assertNotBusy(u);
       final claimed = List<String>.from(e['claimedBy'] as List? ?? []);
       if (claimed.contains(uid)) throw Exception('Hai già preso il tuo strumento');
       final pool = def.claimPool ?? ItemService.dropKeys();

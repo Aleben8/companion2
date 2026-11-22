@@ -4,8 +4,11 @@ import 'package:flutter_colorpicker/flutter_colorpicker.dart';
 import 'package:provider/provider.dart';
 
 import '../constants.dart';
+import '../mode.dart';
+import '../services/mode_service.dart';
 import '../services/party_service.dart';
 import '../services/session.dart';
+import '../services/table_service.dart';
 import '../theme.dart';
 import '../widgets/common.dart';
 
@@ -23,6 +26,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Color _color = kDefaultColor;
   bool _loading = true;
   bool _busy = false;
+  bool _isMaster = false;
 
   Session get _s => context.read<Session>();
 
@@ -39,10 +43,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _parties = await PartyService.myParties(uid);
       if (_party != null && !_parties.contains(_party)) _parties = [..._parties, _party!];
       _color = _s.color;
+      await _loadMaster();
     } catch (e) {
       debugPrint('Errore load settings: $e');
     }
     if (mounted) setState(() => _loading = false);
+  }
+
+  Future<void> _loadMaster() async {
+    _isMaster = _party != null && await PartyService.isMaster(_party!, _s.userName!);
   }
 
   Future<void> _switch(String code) async {
@@ -50,11 +59,59 @@ class _SettingsScreenState extends State<SettingsScreen> {
     try {
       await PartyService.switchParty(_s.userName!, code);
       _party = code;
+      await _loadMaster();
       if (mounted) snack(context, 'Passato al party: $code');
     } catch (e) {
       debugPrint('Errore switch: $e');
     }
     if (mounted) setState(() => _busy = false);
+  }
+
+  Future<void> _setMode(String mode) async {
+    if (_party == null) return;
+    setState(() => _busy = true);
+    try {
+      await TableService.switchMode(_party!, mode); // adatta anche la partita in corso
+      if (mounted) snack(context, mode == kModeLive ? 'Party in modalità dal vivo' : 'Party in modalità tavolo');
+    } catch (e) {
+      if (mounted) snack(context, 'Errore: $e', error: true);
+    }
+    if (mounted) setState(() => _busy = false);
+  }
+
+  /// Modalità del party: tutti la vedono, solo il Master la cambia.
+  Widget _modeCard() {
+    final mode = context.watch<ModeService>().mode;
+    return Container(
+      margin: const EdgeInsets.only(top: 16),
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(18), border: Border.all(color: Pal.line, width: 2)),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        const Text('Modalità di gioco', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800)),
+        const SizedBox(height: 10),
+        if (_isMaster)
+          SizedBox(
+            width: double.infinity,
+            child: SegmentedButton<String>(
+              segments: const [
+                ButtonSegment(value: kModeTable, icon: Icon(Icons.casino_outlined), label: Text('Tavolo')),
+                ButtonSegment(value: kModeLive, icon: Icon(Icons.map_outlined), label: Text('Dal vivo')),
+              ],
+              selected: {mode},
+              onSelectionChanged: _busy ? null : (s) => _setMode(s.first),
+            ),
+          )
+        else
+          Text(mode == kModeLive ? 'Dal vivo (GPS)' : 'Tavolo', style: const TextStyle(fontSize: 16)),
+        const SizedBox(height: 8),
+        Text(
+          _isMaster
+              ? 'Vale per tutti i giocatori del party, anche a partita in corso.'
+              : 'La sceglie il Master del party.',
+          style: const TextStyle(color: Pal.sub, fontSize: 12),
+        ),
+      ]),
+    );
   }
 
   Future<void> _joinNew() async {
@@ -170,6 +227,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     ]),
                   ]),
                 ),
+                if (_party != null) _modeCard(),
                 const SizedBox(height: 24),
                 Text('Personalizzazione Colore per: $name', style: white.copyWith(fontSize: 24, fontWeight: FontWeight.w500)),
                 const SizedBox(height: 14),

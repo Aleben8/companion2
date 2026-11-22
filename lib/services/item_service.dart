@@ -7,6 +7,7 @@ import '../geo.dart';
 import '../items.dart';
 import '../mode.dart';
 import '../table/zones.dart';
+import 'live_service.dart';
 import 'party_service.dart';
 import 'table_service.dart';
 
@@ -74,9 +75,10 @@ class ItemService {
   static dynamic fleeUntil() => until(minutes: kFleeBlockMinutes, rounds: kFleeBlockRounds);
 
   /// Un effetto è attivo se la scadenza è nel futuro (Timestamp) o se il giro corrente non l'ha superata.
+  /// I giri valgono in entrambe le modalità (dal vivo avanzano ogni N minuti), purché la partita sia in corso.
   static bool isActive(dynamic v) {
     if (v is Timestamp) return v.toDate().isAfter(DateTime.now());
-    if (v is num) return kTableMode && TableClock.round <= v.toInt(); // i giri esistono solo al tavolo
+    if (v is num) return TableClock.round > 0 && TableClock.round <= v.toInt();
     return false;
   }
 
@@ -185,7 +187,8 @@ class ItemService {
     await _consume(uid, ItemId.radar);
     final players = await PartyService.players(party).get();
     final out = <RadarContact>[];
-    final hidden = kTableMode ? await TableService.radarHiddenZones(party) : <String>{};
+    // nebbia: dal vivo nasconde chi è (secondo il GPS) nella zona dell'evento
+    final hidden = await TableService.radarHiddenZones(party);
     final mine = shieldZone(me); // Bussola: vedi anche attraverso la nebbia di quella zona
     if (mine != null) hidden.remove(mine);
     for (final p in players.docs) {
@@ -199,6 +202,7 @@ class ItemService {
             place: '${zoneSpec('${tp['zone']}').name} · settore ${tp['sector']}'));
         continue;
       }
+      if (hidden.contains((u['pos'] as Map?)?['zone'])) continue;
       final loc = u['location'];
       if (loc is! Map) continue;
       final lat = (loc['lat'] as num?)?.toDouble();
@@ -304,6 +308,7 @@ class ItemService {
     final ref = userRef(uid);
     return _db.runTransaction<void>((tx) async {
       final u = (await tx.get(ref)).data() ?? {};
+      if (!kTableMode) LiveService.assertNotBusy(u);
       final def = itemDef(id);
       final coins = coinsOf(u);
       if (coins < def.price) throw Exception('Monete insufficienti (servono ${def.price} 🪙)');
@@ -572,8 +577,17 @@ class ItemService {
         return {'stealthUntil': until(minutes: kStealthMinutes, rounds: kStealthRounds)};
       });
 
-  /// Clessidra: altre azioni subito (solo nel tuo turno).
+  /// Clessidra: al tavolo altre azioni subito (solo nel tuo turno), dal vivo azzera le attese.
   static Future<void> useHourglass(String uid, String party) async {
+    if (!kTableMode) {
+      final u = (await userRef(uid).get()).data();
+      if (LiveService.left(u?['busyUntil']) == null && LiveService.left(u?['searchReadyAt']) == null) {
+        throw Exception('Non hai attese da azzerare');
+      }
+      await _consume(uid, ItemId.clessidra);
+      await LiveService.clearWaits(uid);
+      return;
+    }
     await TableService.assertMyTurn(party, uid);
     await _consume(uid, ItemId.clessidra);
     await TableService.grantActions(party, uid);

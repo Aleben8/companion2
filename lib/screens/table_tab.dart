@@ -8,6 +8,8 @@ import 'package:provider/provider.dart';
 import '../mode.dart';
 import '../services/battle_service.dart';
 import '../services/item_service.dart';
+import '../services/live_service.dart';
+import '../services/location_service.dart';
 import '../services/party_service.dart';
 import '../services/session.dart';
 import '../services/table_service.dart';
@@ -17,6 +19,7 @@ import '../theme.dart';
 import '../widgets/clue_search.dart';
 import '../widgets/common.dart';
 import '../widgets/drop.dart';
+import '../widgets/game_status.dart';
 
 int _i(dynamic v) => v is num ? v.toInt() : 0;
 
@@ -88,7 +91,10 @@ class _TableTabState extends State<TableTab> {
       started ? 'Riavvia la partita' : 'Avvia la partita',
       started
           ? 'Giro, posizioni, trappole ed eventi ripartono da zero (strumenti e badge restano).'
-          : 'Verrà sorteggiato l’ordine dei turni, tutti partono dall’Hub e vengono pianificati gli eventi di zona.',
+          : kTableMode
+              ? 'Verrà sorteggiato l’ordine dei turni, tutti partono dall’Hub e vengono pianificati gli eventi di zona.'
+              : 'Parte l’orologio dei giri (uno ogni ${await TableService.roundMinutes(_party!)} minuti) e vengono '
+                  'pianificati gli eventi di zona. La zona di ognuno la decide il GPS.',
       started ? 'Riavvia' : 'Avvia',
     );
     if (go) await _run(() => TableService.startGame(_party!, manualEvents: _manualNext), ok: 'Partita avviata!');
@@ -154,7 +160,7 @@ class _TableTabState extends State<TableTab> {
 
   /// Master, eventi manuali: sceglie l'evento della carta pescata (e la zona per il leggendario).
   Future<void> _addManualEvent() async {
-    final defs = [...kZoneEventDefs, kLegendaryDef];
+    final defs = [...TableService.availableEvents, kLegendaryDef];
     final def = await showDialog<ZoneEventDef>(
       context: context,
       builder: (ctx) => SimpleDialog(title: const Text('Quale evento hai pescato?'), children: [
@@ -203,7 +209,18 @@ class _TableTabState extends State<TableTab> {
     await _run(() => TableService.endTurn(_party!, _s.userName!));
   }
 
+  /// Master, dal vivo: centra la zona nella posizione GPS attuale.
+  Future<void> _placeZoneHere(ZoneSpec z, LiveZone? cur) => _run(() async {
+        final p = await context.read<LocationService>().current();
+        if (p == null) throw Exception('Posizione non disponibile');
+        await LiveService.setZone(_party!, z.id, p.latitude, p.longitude, cur?.radius ?? kDefaultZoneRadius);
+      }, ok: '${z.name} posizionata qui');
+
   Future<void> _move(ZoneSpec z, int sector, Map<String, dynamic> st, List<Map<String, dynamic>> events, Map? pos) async {
+    if (!kTableMode) {
+      snack(context, 'Dal vivo ti sposti camminando: zona e settore li decide il GPS');
+      return;
+    }
     final me = _s.userName!;
     final order = List<String>.from(st['order'] as List);
     if (order[_i(st['idx'])] != me) {
@@ -269,8 +286,9 @@ class _TableTabState extends State<TableTab> {
               builder: (context, uSnap) {
                 final pos = uSnap.data?['pos'] as Map?;
                 _shield = ItemService.shieldZone(uSnap.data);
+                final table = kTableMode;
                 return Column(children: [
-                  const SectionTitle('Tavolo'),
+                  SectionTitle(table ? 'Tavolo' : 'Partita'),
                   if (_master) _masterTools(started, st, events),
                   if (!started)
                     const Padding(
@@ -282,15 +300,16 @@ class _TableTabState extends State<TableTab> {
                       ),
                     )
                   else ...[
-                    _turnCard(st!, me),
+                    if (table && st!['order'] is List) _turnCard(st, me) else if (!table) _clockCard(st!, uSnap.data),
                     _positionCard(pos),
-                    ..._eventCards(events, st, pos, me),
-                    const SectionTitle('Mappa'),
-                    ClueSearchButton(
-                      party: _party!,
-                      uid: me,
-                      enabled: List<String>.from(st['order'] as List)[_i(st['idx'])] == me,
-                    ),
+                    ..._eventCards(events, st!, pos, me),
+                    SectionTitle(table ? 'Mappa' : 'Zone'),
+                    if (table)
+                      ClueSearchButton(
+                        party: _party!,
+                        uid: me,
+                        enabled: st['order'] is List && List<String>.from(st['order'] as List)[_i(st['idx'])] == me,
+                      ),
                     for (final z in kZones) _zoneCard(z, pos, events, st, me),
                   ],
                 ]);
@@ -363,13 +382,16 @@ class _TableTabState extends State<TableTab> {
             ),
         ],
         const SizedBox(height: 8),
-        DropButton(
-          label: 'Collegamenti tra zone',
-          icon: Icons.alt_route,
-          colors: Pal.neutral,
-          height: 44,
-          onTap: _busy ? null : () => _editLinks(st),
-        ),
+        if (kTableMode)
+          DropButton(
+            label: 'Collegamenti tra zone',
+            icon: Icons.alt_route,
+            colors: Pal.neutral,
+            height: 44,
+            onTap: _busy ? null : () => _editLinks(st),
+          )
+        else
+          _liveMasterTools(st),
         const SizedBox(height: 12),
         DropButton(
           label: started ? 'Riavvia la partita' : 'Avvia la partita',
@@ -385,6 +407,83 @@ class _TableTabState extends State<TableTab> {
           height: 44,
           onTap: _busy ? null : () => _run(TableService.seedTypesIfMissing, ok: 'Tipi pronti (se mancavano, sono stati creati)'),
         ),
+      ]),
+    );
+  }
+
+  /// Master dal vivo: durata del giro e posizione delle zone sulla mappa.
+  Widget _liveMasterTools(Map<String, dynamic>? st) {
+    return StreamBuilder<Map<String, dynamic>?>(
+      stream: PartyService.party(_party!).snapshots().map((s) => s.data()),
+      builder: (context, snap) {
+        final zones = LiveService.zonesOf(snap.data);
+        final mins = (snap.data?['roundMinutes'] as num?)?.toInt() ?? kDefaultRoundMinutes;
+        return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+          Row(children: [
+            const Expanded(child: Text('Durata di un giro', style: TextStyle(fontWeight: FontWeight.w700))),
+            DropdownButton<int>(
+              value: kRoundMinuteChoices.contains(mins) ? mins : null,
+              hint: Text('$mins min'),
+              items: [for (final m in kRoundMinuteChoices) DropdownMenuItem(value: m, child: Text('$m min'))],
+              onChanged: _busy ? null : (m) => m == null ? null : _run(() => TableService.setRoundMinutes(_party!, m)),
+            ),
+          ]),
+          const SizedBox(height: 6),
+          Text(
+            'Zone sulla mappa (${zones.length}/${kZones.length}). Mettiti sul posto e premi "Qui", '
+            'oppure tieni premuto sulla mappa qui sopra. I settori sono i 4 spicchi Nord, Est, Sud e Ovest.',
+            style: const TextStyle(color: Pal.sub, fontSize: 12),
+          ),
+          for (final z in kZones)
+            Row(children: [
+              Expanded(
+                child: Text.rich(TextSpan(children: [
+                  TextSpan(text: z.name, style: const TextStyle(fontWeight: FontWeight.w700)),
+                  TextSpan(
+                    text: zones[z.id] == null ? '  da posizionare' : '  ✓',
+                    style: TextStyle(color: zones[z.id] == null ? Pal.warn : Pal.ok, fontSize: 12),
+                  ),
+                ])),
+              ),
+              if (zones[z.id] != null)
+                DropdownButton<double>(
+                  value: kZoneRadiusChoices.contains(zones[z.id]!.radius) ? zones[z.id]!.radius : null,
+                  hint: Text('${zones[z.id]!.radius.round()} m'),
+                  underline: const SizedBox.shrink(),
+                  items: [for (final r in kZoneRadiusChoices) DropdownMenuItem(value: r, child: Text('${r.round()} m'))],
+                  onChanged: _busy ? null : (r) => r == null ? null : _run(() => LiveService.setRadius(_party!, z.id, r)),
+                ),
+              TextButton(onPressed: _busy ? null : () => _placeZoneHere(z, zones[z.id]), child: const Text('Qui')),
+            ]),
+        ]);
+      },
+    );
+  }
+
+  /// Dal vivo: giro corrente e conto alla rovescia al prossimo, più l'eventuale attesa in corso.
+  Widget _clockCard(Map<String, dynamic> st, Map<String, dynamic>? user) {
+    final next = TableService.nextRoundAt(st);
+    final busy = LiveService.left(user?['busyUntil']);
+    final search = LiveService.left(user?['searchReadyAt']);
+    return DropCard(
+      colors: Pal.gold,
+      label: 'Giro ${_i(st['round'])}',
+      labelOnTop: true,
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [
+          const Text('Prossimo giro tra ', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
+          if (next != null) Countdown(next, style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w800)),
+        ]),
+        const SizedBox(height: 4),
+        Text('Un giro ogni ${_i(st['roundMinutes']) == 0 ? kDefaultRoundMinutes : _i(st['roundMinutes'])} minuti. '
+            'Niente turni: si gioca tutti insieme.', style: const TextStyle(color: Pal.sub, fontSize: 12)),
+        if (busy != null || search != null) ...[
+          const SizedBox(height: 8),
+          Wrap(spacing: 6, runSpacing: 6, children: [
+            if (busy != null) InfoChip('In attesa: ${LiveService.fmt(busy)}', color: Pal.bad),
+            if (search != null) InfoChip('Nuova ricerca tra ${LiveService.fmt(search)}', color: Pal.warn),
+          ]),
+        ],
       ]),
     );
   }
@@ -441,10 +540,16 @@ class _TableTabState extends State<TableTab> {
       colors: typeColors(z?.type),
       label: 'La tua posizione',
       labelOnTop: true,
-      child: Text(
-        z == null ? 'Non ancora sulla mappa' : '${z.name} · settore ${pos!['sector']}',
-        style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
-      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Text(
+          z == null
+              ? (kTableMode ? 'Non ancora sulla mappa' : 'Fuori dalle zone di gioco')
+              : '${z.name} · ${kTableMode ? 'settore ${pos!['sector']}' : LiveService.sectorLabel(z.id, pos!['sector'])}',
+          style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
+        ),
+        if (!kTableMode)
+          const Text('La aggiorna il GPS mentre cammini.', style: TextStyle(color: Pal.sub, fontSize: 12)),
+      ]),
     );
   }
 
@@ -484,7 +589,13 @@ class _TableTabState extends State<TableTab> {
               ],
               if (blocked.isNotEmpty) ...[
                 const SizedBox(height: 8),
-                Wrap(spacing: 6, runSpacing: 6, children: [for (final b in blocked) InfoChip('Settore $b bloccato', color: Pal.bad)]),
+                Wrap(spacing: 6, runSpacing: 6, children: [
+                  for (final b in blocked)
+                    InfoChip(
+                      '${kTableMode ? 'Settore $b' : LiveService.sectorLabel(z.id, b).replaceFirst('settore', 'Settore')} bloccato',
+                      color: Pal.bad,
+                    ),
+                ]),
               ],
               if (active && def.claimItem) ...[
                 const SizedBox(height: 10),
@@ -550,11 +661,13 @@ class _TableTabState extends State<TableTab> {
       label: mineZone ? '${z.name} · sei qui' : z.name,
       labelOnTop: true,
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Text(
-          linked.isEmpty ? 'Nessun collegamento diretto' : 'Collegata a: ${linked.join(', ')}',
-          style: const TextStyle(color: Pal.sub, fontSize: 12),
-        ),
-        const SizedBox(height: 6),
+        if (kTableMode) ...[
+          Text(
+            linked.isEmpty ? 'Nessun collegamento diretto' : 'Collegata a: ${linked.join(', ')}',
+            style: const TextStyle(color: Pal.sub, fontSize: 12),
+          ),
+          const SizedBox(height: 6),
+        ],
         if (zoneEvents.isNotEmpty) ...[
           Wrap(spacing: 6, runSpacing: 6, children: [
             for (final e in zoneEvents)
@@ -593,7 +706,11 @@ class _TableTabState extends State<TableTab> {
             ? const Icon(Icons.person_pin_circle, color: Colors.white)
             : blocked
                 ? const Icon(Icons.block, color: Pal.sub, size: 20)
-                : Text('$s', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 16, color: colors.first)),
+                : Text(
+                    // dal vivo i settori sono i punti cardinali
+                    !kTableMode && z.sectors == 4 ? const ['N', 'E', 'S', 'O'][s - 1] : '$s',
+                    style: TextStyle(fontWeight: FontWeight.w800, fontSize: 16, color: colors.first),
+                  ),
       ),
     );
   }
@@ -604,8 +721,41 @@ class _TableTabState extends State<TableTab> {
 // =============================================================================
 
 /// Barra compatta sempre visibile: giro, chi gioca, azioni rimaste.
+/// Dal vivo: giro, conto alla rovescia al prossimo e zona in cui ti trovi.
 class TurnBar extends StatelessWidget {
   const TurnBar({super.key});
+
+  Widget _liveBar(Map<String, dynamic> st, Map<String, dynamic>? user) {
+    final next = TableService.nextRoundAt(st);
+    final pos = user?['pos'] as Map?;
+    final busy = LiveService.left(user?['busyUntil']) != null;
+    return Container(
+      margin: const EdgeInsets.only(top: 8),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      decoration: BoxDecoration(
+        color: busy ? const Color(0xFFFFE9E9) : Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: busy ? Pal.bad : Pal.line, width: 2),
+      ),
+      child: Row(children: [
+        const Icon(Icons.timer_outlined, color: Pal.sub),
+        const SizedBox(width: 10),
+        Text('Giro ${_i(st['round'])}', style: const TextStyle(fontWeight: FontWeight.w800)),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Text(
+            pos == null ? 'Fuori dalle zone' : zoneSpec('${pos['zone']}').name,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(fontWeight: FontWeight.w700, color: Pal.sub),
+          ),
+        ),
+        if (next != null) ...[
+          const Text('prossimo ', style: TextStyle(fontSize: 12, color: Pal.sub)),
+          Countdown(next, style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 13)),
+        ],
+      ]),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -620,6 +770,8 @@ class TurnBar extends StatelessWidget {
           builder: (context, snap) {
             final st = snap.data;
             if (st == null || st['started'] != true) return const SizedBox.shrink();
+            if (!kTableMode) return _liveBar(st, uSnap.data);
+            if (st['order'] is! List) return const SizedBox.shrink();
             final order = List<String>.from(st['order'] as List);
             final current = order[_i(st['idx'])];
             final mine = current == uid;
@@ -654,6 +806,7 @@ class TurnBar extends StatelessWidget {
 
 /// Osservatore invisibile: tiene aggiornato il giro corrente, avvisa quando
 /// tocca a te e quando un evento di zona viene annunciato, parte o finisce.
+/// Dal vivo fa anche avanzare l'orologio dei giri e ricava zona e settore dal GPS.
 class TableWatcher extends StatefulWidget {
   const TableWatcher({super.key});
   @override
@@ -661,11 +814,17 @@ class TableWatcher extends StatefulWidget {
 }
 
 class _TableWatcherState extends State<TableWatcher> {
-  StreamSubscription? _userSub, _stateSub, _evSub;
+  StreamSubscription? _userSub, _stateSub, _evSub, _zoneSub;
+  Timer? _clock;
   String? _party;
   String? _turnKey;
+  int? _lastRound;
   bool _evFirst = true;
+  bool _started = false;
   final Map<String, String> _statuses = {};
+  Map<String, LiveZone> _zones = {};
+  String? _posKey; // ultima zona/settore scritta dal GPS
+  String? _startKey; // avvio della partita (per accorgersi di un riavvio)
   late final String _uid;
 
   @override
@@ -677,24 +836,85 @@ class _TableWatcherState extends State<TableWatcher> {
       final party = p is String && p.isNotEmpty ? p : null;
       if (party != _party) _subscribe(party);
     });
+    if (!kTableMode) {
+      // dal vivo: chi ha la app aperta controlla l'orologio (lo fa avanzare uno solo, con una transazione)
+      _clock = Timer.periodic(const Duration(seconds: 15), (_) => _tick());
+    }
+  }
+
+  Future<void> _tick() async {
+    if (_party == null || !_started) return;
+    try {
+      await TableService.tickLive(_party!);
+    } catch (e) {
+      debugPrint('Errore orologio: $e');
+    }
   }
 
   void _subscribe(String? party) {
     _stateSub?.cancel();
     _evSub?.cancel();
+    _zoneSub?.cancel();
     _party = party;
     _turnKey = null;
+    _lastRound = null;
     _evFirst = true;
+    _posKey = null;
+    _zones = {};
     _statuses.clear();
     if (party == null) return;
     _stateSub = TableService.watchState(party).listen(_onState);
     _evSub = TableService.watchEvents(party).listen(_onEvents);
+    if (!kTableMode) {
+      _zoneSub = LiveService.watchZones(party).listen((z) {
+        _zones = z;
+        _syncPos(context.read<LocationService>());
+      });
+    }
+  }
+
+  /// Dal vivo: zona e settore in base al GPS (null = fuori dalle zone).
+  void _syncPos(LocationService loc) {
+    final p = loc.position;
+    if (kTableMode || _party == null || p == null) return;
+    final pos = LiveService.locate(_zones, p.latitude, p.longitude);
+    final key = pos == null ? '-' : '${pos['zone']}/${pos['sector']}';
+    if (key == _posKey) return;
+    final prevZone = _posKey?.split('/').first;
+    _posKey = key;
+    TableService.updateLivePos(_uid, pos, party: _started ? _party : null).catchError((e) {
+      _posKey = null; // si riprova alla prossima posizione
+      debugPrint('Errore posizione di zona: $e');
+    });
+    if (pos != null && prevZone != null && prevZone != pos['zone']) {
+      // può essere chiamata durante il build: l'avviso va al frame successivo
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) snack(context, '📍 Sei entrato in ${zoneSpec('${pos['zone']}').name}');
+      });
+    }
   }
 
   void _onState(Map<String, dynamic>? st) {
     if (st == null) return;
     TableClock.round = _i(st['round']);
-    if (st['started'] != true) return;
+    _started = st['started'] == true;
+    if (!_started) return;
+    if (!kTableMode) {
+      // (ri)avvio: la partita ha azzerato le posizioni, il GPS deve riscriverle
+      final startKey = '${st['startedAt']}';
+      if (startKey != _startKey) {
+        _startKey = startKey;
+        _posKey = null;
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) _syncPos(context.read<LocationService>());
+        });
+      }
+      final r = _i(st['round']);
+      if (_lastRound != null && r != _lastRound && mounted) snack(context, '⏱ Inizia il giro $r');
+      _lastRound = r;
+      return;
+    }
+    if (st['order'] is! List) return;
     final order = List<String>.from(st['order'] as List);
     final key = '${_i(st['round'])}_${_i(st['idx'])}';
     if (_turnKey != null && key != _turnKey && order[_i(st['idx'])] == _uid && mounted) {
@@ -729,9 +949,112 @@ class _TableWatcherState extends State<TableWatcher> {
     _userSub?.cancel();
     _stateSub?.cancel();
     _evSub?.cancel();
+    _zoneSub?.cancel();
+    _clock?.cancel();
     super.dispose();
   }
 
   @override
-  Widget build(BuildContext context) => const SizedBox.shrink();
+  Widget build(BuildContext context) {
+    // dal vivo si ricostruisce a ogni nuova posizione GPS
+    if (!kTableMode) _syncPos(context.watch<LocationService>());
+    return const SizedBox.shrink();
+  }
+}
+
+/// Fascia scura in cima alla home (tavolo e dal vivo): eventi di zona in corso o annunciati,
+/// con quanti giri mancano alla fine (in corso) o all'inizio (in arrivo).
+class ZoneEventsStrip extends StatelessWidget {
+  const ZoneEventsStrip({super.key});
+
+  static String _giri(int n) => n == 1 ? '1 giro' : '$n giri';
+
+  @override
+  Widget build(BuildContext context) {
+    final uid = context.read<Session>().userName!;
+    return StreamBuilder<Map<String, dynamic>?>(
+      stream: ItemService.watchUser(uid),
+      builder: (context, uSnap) {
+        final p = uSnap.data?['actualParty'];
+        if (p is! String || p.isEmpty) return const SizedBox.shrink();
+        return StreamBuilder<Map<String, dynamic>?>(
+          stream: TableService.watchState(p),
+          builder: (context, stSnap) {
+            final st = stSnap.data;
+            if (st == null || st['started'] != true) return const SizedBox.shrink();
+            final round = _i(st['round']);
+            return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+              stream: TableService.watchEvents(p),
+              builder: (context, evSnap) {
+                final events = [
+                  for (final d in evSnap.data?.docs ?? const <QueryDocumentSnapshot<Map<String, dynamic>>>[])
+                    if (d.data()['status'] == 'active' || d.data()['status'] == 'announced') d.data(),
+                ]..sort((a, b) {
+                    final byStatus = (a['status'] == 'active' ? 0 : 1).compareTo(b['status'] == 'active' ? 0 : 1);
+                    return byStatus != 0 ? byStatus : _i(a['startRound']).compareTo(_i(b['startRound']));
+                  });
+                if (events.isEmpty) return const SizedBox.shrink();
+                return Container(
+                  margin: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+                  decoration: BoxDecoration(color: Pal.ink, borderRadius: BorderRadius.circular(18)),
+                  child: Column(children: [
+                    for (var i = 0; i < events.length; i++) ...[
+                      if (i > 0) Divider(height: 1, color: Colors.white.withOpacity(0.12)),
+                      _row(events[i], round),
+                    ],
+                  ]),
+                );
+              },
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Widget _row(Map<String, dynamic> e, int round) {
+    final active = e['status'] == 'active';
+    final zone = zoneSpec(e['zone'] as String? ?? '');
+    final legendary = e['legendary'] == true;
+    final name = legendary && active && e['legendaryName'] != null
+        ? 'Leggendario: ${e['legendaryName']}'
+        : (e['name'] as String? ?? eventDef(e['defId'] as String).name);
+    final start = _i(e['startRound']);
+    final String when;
+    if (active) {
+      when = 'finisce tra ${_giri(_i(e['endRound']) - round + 1)}';
+    } else if (start >= TableService.kManualStart) {
+      when = 'inizio deciso dal Master';
+    } else {
+      when = 'inizia tra ${_giri((start - round).clamp(1, 999))}';
+    }
+    final tagColor = active ? Pal.bad : Pal.warn;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      child: Row(children: [
+        Container(
+          width: 78,
+          padding: const EdgeInsets.symmetric(vertical: 4),
+          alignment: Alignment.center,
+          decoration: BoxDecoration(color: tagColor.withOpacity(0.2), borderRadius: BorderRadius.circular(8)),
+          child: Text(active ? 'IN CORSO' : 'IN ARRIVO',
+              style: TextStyle(color: tagColor, fontSize: 10.5, fontWeight: FontWeight.w800, letterSpacing: 0.5)),
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text(name,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w800, fontSize: 14)),
+            Text(zone.name, style: TextStyle(color: Colors.white.withOpacity(0.65), fontSize: 12)),
+          ]),
+        ),
+        const SizedBox(width: 8),
+        Text(when,
+            textAlign: TextAlign.right,
+            style: TextStyle(color: Colors.white.withOpacity(0.85), fontSize: 12, fontWeight: FontWeight.w700)),
+      ]),
+    );
+  }
 }

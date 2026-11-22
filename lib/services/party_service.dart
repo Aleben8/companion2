@@ -41,6 +41,10 @@ class PartyService {
   static Future<void> switchParty(String uid, String code) =>
       _db.collection('Users').doc(uid).set({'actualParty': code}, SetOptions(merge: true));
 
+  /// Il Master sceglie la modalità del party: 'tavolo' o 'live'. Si può cambiare anche a partita in corso.
+  static Future<void> setMode(String code, String mode) =>
+      party(code).set({'mode': mode}, SetOptions(merge: true));
+
   static Future<bool> isMaster(String code, String uid) async {
     final d = await players(code).doc(uid).get();
     return d.data()?['isMaster'] == true;

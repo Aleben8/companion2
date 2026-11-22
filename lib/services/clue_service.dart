@@ -7,6 +7,7 @@ import '../geo.dart';
 import '../items.dart';
 import '../mode.dart';
 import 'item_service.dart';
+import 'live_service.dart';
 import 'party_service.dart';
 import 'table_service.dart';
 
@@ -132,8 +133,25 @@ class ClueService {
       myPos = (await ItemService.userRef(uid).get()).data()?['pos'] as Map?;
       if (myPos == null) throw Exception('Non sei ancora sulla mappa');
       await TableService.spendAction(party, uid); // cercare è un'azione
-    } else if (pos == null) {
-      throw Exception('Posizione non disponibile');
+    } else {
+      if (pos == null) throw Exception('Posizione non disponibile');
+      // dal vivo cercare non costa azioni ma un'attesa
+      final ref = ItemService.userRef(uid);
+      final u = (await ref.get()).data();
+      LiveService.assertNotBusy(u);
+      final wait = LiveService.left(u?['searchReadyAt']);
+      if (wait != null) throw Exception('Hai appena cercato: puoi riprovare tra ${LiveService.fmt(wait)}');
+      final here = u?['pos'] as Map?;
+      if (here != null) {
+        final blocked = TableService.blockedSectors(await TableService.activeEvents(party), here['zone'] as String,
+            shield: ItemService.shieldZone(u));
+        if (blocked.contains((here['sector'] as num?)?.toInt())) {
+          throw Exception('Questo settore è bloccato da un evento: spostati o usa una Chiave');
+        }
+      }
+      await ref.set({
+        'searchReadyAt': Timestamp.fromDate(DateTime.now().add(const Duration(minutes: kLiveSearchCooldownMinutes))),
+      }, SetOptions(merge: true));
     }
 
     // Traccia per la Lente: dove hai cercato.

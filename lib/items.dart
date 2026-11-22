@@ -10,7 +10,7 @@ enum ItemId {
   lente, sensore, allarme, meteo, passoFelpato, clessidra, chiave,
   // battaglia
   elisir, superPozione, antidoto, amuleto, guanto,
-  // protezioni di bioma (solo al tavolo, si comprano nell'emporio della zona)
+  // protezioni di bioma (si comprano nell'emporio della zona)
   corda, bussola, tutaNeve, tutaIgnifuga, zattera, parafulmine,
   // trasporti
   biglietto,
@@ -29,21 +29,25 @@ extension ItemCategoryX on ItemCategory {
 class ItemDef {
   final ItemId id;
   final String name;
-  final String description;
-  final String usage; // dove/come si usa
+  final String tableDescription;
+  final String tableUsage; // dove/come si usa
+  final String? liveDescription; // testo dal vivo, se diverso da quello del tavolo
+  final String? liveUsage;
   final List<Color> colors;
   final ItemCategory category;
   final int price; // monete all'emporio
   final IconData icon; // usata se manca lo sprite in assets/images/items/
-  final bool tableOnly; // ha senso solo con la mappa da tavolo
+  final bool tableOnly; // ha senso solo al tavolo (es. Biglietto: dal vivo non ci sono collegamenti)
   final int rarity; // 3 comune, 2 non comune, 1 raro (peso nei premi casuali)
   final String? zone; // protezione di bioma: zona che protegge
   const ItemDef(
     this.id,
     this.name,
-    this.description,
-    this.usage,
+    this.tableDescription,
+    this.tableUsage,
     this.colors, {
+    this.liveDescription,
+    this.liveUsage,
     this.category = ItemCategory.esplorazione,
     this.price = 3,
     this.icon = Icons.inventory_2,
@@ -51,6 +55,10 @@ class ItemDef {
     this.rarity = 2,
     this.zone,
   });
+
+  /// Testi della modalità corrente (il Master può cambiarla a partita in corso).
+  String get description => kTableMode ? tableDescription : liveDescription ?? tableDescription;
+  String get usage => kTableMode ? tableUsage : liveUsage ?? tableUsage;
 
   String get key => id.name;
   String get asset => 'assets/images/items/$key.png';
@@ -135,13 +143,12 @@ const List<ItemDef> kItems = [
   ItemDef(
     ItemId.repellente,
     'Repellente',
-    kTableMode
-        ? 'La posizione del tuo party sarà nascosta al resto dei giocatori per $kRepellentRounds giri. '
-            'Durante questo tempo non potete essere ingaggiati in scontri.'
-        : 'La localizzazione del tuo party sarà nascosta al resto dei giocatori per $kRepellentMinutes minuti. '
-            'Durante questo tempo non potete essere ingaggiati in scontri.',
+    'La posizione del tuo party sarà nascosta al resto dei giocatori per $kRepellentRounds giri. '
+        'Durante questo tempo non potete essere ingaggiati in scontri.',
     'Si usa dallo zaino.',
     [Color(0xFF5A9E88), Color(0xFF8CD0A8)],
+    liveDescription: 'La localizzazione del tuo party sarà nascosta al resto dei giocatori per $kRepellentMinutes minuti. '
+        'Durante questo tempo non potete essere ingaggiati in scontri.',
     price: 4, icon: Icons.shield_outlined, rarity: 2,
   ),
   ItemDef(
@@ -166,15 +173,13 @@ const List<ItemDef> kItems = [
   ItemDef(
     ItemId.trappola,
     'Trappola',
-    kTableMode
-        ? 'Posizionala nel tuo settore. Il primo party avversario che entrerà nel settore dovrà usare '
-            'una Fune di fuga o salterà il prossimo turno.'
-        : 'Posizionala dove preferisci. Il primo party avversario che si avvicinerà alla zona dovrà usare '
-            'una Fune di fuga o perderà $kTrapPenaltyMinutes minuti.',
-    kTableMode
-        ? 'Si usa dalla borsa: la trappola viene piazzata nel settore in cui ti trovi.'
-        : 'Si usa dallo zaino: la trappola viene piazzata nella tua posizione.',
+    'Posizionala nel tuo settore. Il primo party avversario che entrerà nel settore dovrà usare '
+        'una Fune di fuga o salterà il prossimo turno.',
+    'Si usa dalla borsa: la trappola viene piazzata nel settore in cui ti trovi.',
     [Color(0xFF6B5B95), Color(0xFFA79BD0)],
+    liveDescription: 'Posizionala dove preferisci. Il primo party avversario che si avvicinerà alla zona dovrà usare '
+        'una Fune di fuga o perderà $kTrapPenaltyMinutes minuti.',
+    liveUsage: 'Si usa dallo zaino: la trappola viene piazzata nella tua posizione.',
     price: 3, icon: Icons.warning_amber, rarity: 3,
   ),
   ItemDef(
@@ -189,31 +194,28 @@ const List<ItemDef> kItems = [
   ItemDef(
     ItemId.calmanella,
     'Calmanella',
-    kTableMode
-        ? 'Utilizzando la Calmanella, rivelerai la tua zona e il tuo settore agli altri giocatori.'
-        : 'Utilizzando la Calmanella, rivelerai la tua posizione attuale agli altri giocatori.',
+    'Utilizzando la Calmanella, rivelerai la tua zona e il tuo settore agli altri giocatori.',
     'Si usa dallo zaino.',
     [Color(0xFFE5644E), Color(0xFFF0A060)],
+    liveDescription: 'Utilizzando la Calmanella, rivelerai la tua posizione attuale agli altri giocatori.',
     price: 2, icon: Icons.notifications, rarity: 3,
   ),
   ItemDef(
     ItemId.revitalizzante,
     'Revitalizzante',
-    kTableMode
-        ? 'Il tuo Pokémon sconfitto recupera subito tutti i punti vita: non perdi il turno di recupero.'
-        : 'Il tuo Pokémon sconfitto recupera subito tutti i punti vita: non perdi i $kKoMinutes minuti di recupero.',
+    'Il tuo Pokémon sconfitto recupera subito tutti i punti vita: non perdi il turno di recupero.',
     'Si usa dallo zaino, quando il tuo Pokémon è esausto.',
     [Color(0xFF5FA8E0), Color(0xFFB4DDF5)],
+    liveDescription: 'Il tuo Pokémon sconfitto recupera subito tutti i punti vita: non perdi i $kKoMinutes minuti di recupero.',
     category: ItemCategory.battaglia, price: 5, icon: Icons.favorite, rarity: 2,
   ),
   ItemDef(
     ItemId.radar,
     'Radar',
-    kTableMode
-        ? 'Ti viene fornita la zona e il settore in cui si trovano tutti gli altri party.'
-        : 'Ti viene fornita la posizione attuale di tutti gli altri party.',
+    'Ti viene fornita la zona e il settore in cui si trovano tutti gli altri party.',
     'Si usa dallo zaino.',
     [Color(0xFF3E8CA8), Color(0xFF7FBCD0)],
+    liveDescription: 'Ti viene fornita la posizione attuale di tutti gli altri party.',
     price: 5, icon: Icons.radar, rarity: 2,
   ),
 
@@ -221,12 +223,11 @@ const List<ItemDef> kItems = [
   ItemDef(
     ItemId.lente,
     'Lente',
-    kTableMode
-        ? 'Analizza le tracce lasciate nei settori: mostra quali zone sono già state battute di recente e '
-            'dove si stanno dirigendo i giocatori passati dal tuo settore.'
-        : 'Analizza le tracce lasciate qui intorno: mostra chi ha cercato indizi nelle vicinanze di recente.',
+    'Analizza le tracce lasciate nei settori: mostra quali zone sono già state battute di recente e '
+        'dove si stanno dirigendo i giocatori passati dal tuo settore.',
     'Si usa dalla borsa.',
     [Color(0xFF8E6BD8), Color(0xFFC4A8F0)],
+    liveDescription: 'Analizza le tracce lasciate qui intorno: mostra chi ha cercato indizi nelle vicinanze di recente.',
     price: 4,
     icon: Icons.search,
     rarity: 2,
@@ -234,11 +235,10 @@ const List<ItemDef> kItems = [
   ItemDef(
     ItemId.sensore,
     'Sensore',
-    kTableMode
-        ? 'Ti dice quanti indizi nascosti ci sono nel tuo settore (esclusi i tuoi).'
-        : 'Ti dice quanti indizi nascosti ci sono entro ${kSensorRadiusMeters ~/ 1} metri da te (esclusi i tuoi).',
+    'Ti dice quanti indizi nascosti ci sono nel tuo settore (esclusi i tuoi).',
     'Si usa dalla borsa.',
     [Color(0xFF3FA796), Color(0xFF8FD9CB)],
+    liveDescription: 'Ti dice quanti indizi nascosti ci sono entro ${kSensorRadiusMeters ~/ 1} metri da te (esclusi i tuoi).',
     price: 3,
     icon: Icons.sensors,
     rarity: 3,
@@ -246,11 +246,10 @@ const List<ItemDef> kItems = [
   ItemDef(
     ItemId.allarme,
     'Allarme',
-    kTableMode
-        ? 'Si piazza come una Trappola, ma non blocca nessuno: ti avvisa in segreto quando un altro party entra nel settore.'
-        : 'Si piazza come una Trappola, ma non blocca nessuno: ti avvisa in segreto quando un altro party si avvicina.',
+    'Si piazza come una Trappola, ma non blocca nessuno: ti avvisa in segreto quando un altro party entra nel settore.',
     'Si usa dalla borsa: viene piazzato dove ti trovi.',
     [Color(0xFFE5A23A), Color(0xFFF5D08A)],
+    liveDescription: 'Si piazza come una Trappola, ma non blocca nessuno: ti avvisa in segreto quando un altro party si avvicina.',
     price: 3,
     icon: Icons.notifications_active,
     rarity: 3,
@@ -263,17 +262,15 @@ const List<ItemDef> kItems = [
     [Color(0xFF4F7FCB), Color(0xFF9CC0F0)],
     price: 4,
     icon: Icons.thunderstorm,
-    tableOnly: true,
     rarity: 2,
   ),
   ItemDef(
     ItemId.passoFelpato,
     'Passo felpato',
-    kTableMode
-        ? 'Fino a fine giro ignori Trappole e Allarmi, non lasci tracce e sei invisibile al Radar.'
-        : 'Per $kStealthMinutes minuti ignori Trappole e Allarmi, non lasci tracce e sei invisibile al Radar.',
+    'Fino a fine giro ignori Trappole e Allarmi, non lasci tracce e sei invisibile al Radar.',
     'Si usa dalla borsa.',
     [Color(0xFF6B7A8F), Color(0xFFADB9C9)],
+    liveDescription: 'Per $kStealthMinutes minuti ignori Trappole e Allarmi, non lasci tracce e sei invisibile al Radar.',
     price: 5,
     icon: Icons.do_not_step,
     rarity: 1,
@@ -284,9 +281,11 @@ const List<ItemDef> kItems = [
     'Ottieni subito altre azioni, come un secondo turno solo per te (pari alle azioni di un turno).',
     'Si usa nel tuo turno, dalla borsa.',
     [Color(0xFFD9A23A), Color(0xFFF2D58A)],
+    liveDescription: 'Azzera subito le attese: puoi cercare indizi, comprare e agire senza aspettare '
+        '(anche dopo bufera ed eruzione).',
+    liveUsage: 'Si usa dalla borsa, quando sei in attesa.',
     price: 6,
     icon: Icons.hourglass_bottom,
-    tableOnly: true,
     rarity: 1,
   ),
   ItemDef(
@@ -297,7 +296,6 @@ const List<ItemDef> kItems = [
     [Color(0xFFB08A3E), Color(0xFFE0C47A)],
     price: 5,
     icon: Icons.vpn_key,
-    tableOnly: true,
     rarity: 1,
   ),
 
@@ -382,7 +380,6 @@ const List<ItemDef> kItems = [
     category: ItemCategory.zona,
     price: 4,
     icon: Icons.terrain,
-    tableOnly: true,
     zone: 'canyon',
   ),
   ItemDef(
@@ -394,7 +391,6 @@ const List<ItemDef> kItems = [
     category: ItemCategory.zona,
     price: 4,
     icon: Icons.explore,
-    tableOnly: true,
     zone: 'giungla',
   ),
   ItemDef(
@@ -406,7 +402,6 @@ const List<ItemDef> kItems = [
     category: ItemCategory.zona,
     price: 4,
     icon: Icons.ac_unit,
-    tableOnly: true,
     zone: 'neve',
   ),
   ItemDef(
@@ -418,7 +413,6 @@ const List<ItemDef> kItems = [
     category: ItemCategory.zona,
     price: 4,
     icon: Icons.local_fire_department,
-    tableOnly: true,
     zone: 'vulcano',
   ),
   ItemDef(
@@ -430,7 +424,6 @@ const List<ItemDef> kItems = [
     category: ItemCategory.zona,
     price: 4,
     icon: Icons.sailing,
-    tableOnly: true,
     zone: 'isola',
   ),
   ItemDef(
@@ -442,7 +435,6 @@ const List<ItemDef> kItems = [
     category: ItemCategory.zona,
     price: 4,
     icon: Icons.flash_on,
-    tableOnly: true,
     zone: 'colline',
   ),
 ];

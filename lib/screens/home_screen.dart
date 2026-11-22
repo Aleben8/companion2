@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 
 import '../constants.dart';
 import '../mode.dart';
+import '../services/mode_service.dart';
 import '../services/session.dart';
 import '../theme.dart';
 import '../widgets/badge_row.dart';
@@ -27,10 +28,30 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen> {
   HomeTab _tab = HomeTab.stats;
   String? _openBattleId; // battaglia aperta dalla sfida a un capopalestra
+  late final ModeService _modes;
+
+  @override
+  void initState() {
+    super.initState();
+    _modes = context.read<ModeService>()..bind(context.read<Session>().userName!);
+  }
+
+  @override
+  void dispose() {
+    _modes.unbind();
+    super.dispose();
+  }
+
+  void _openBattle(String id) => setState(() {
+        _openBattleId = id;
+        _tab = HomeTab.battle;
+      });
 
   @override
   Widget build(BuildContext context) {
     final s = context.watch<Session>();
+    // Il Master può cambiare modalità in qualsiasi momento: la home si ricostruisce da capo.
+    final mode = context.watch<ModeService>().mode;
     final pk = s.pokemon ?? {};
     final name = (pk['PkmName'] ?? s.pokemonId ?? '').toString();
     final prim = (pk['PkmTypePrim'] ?? '').toString();
@@ -53,15 +74,17 @@ class _HomeScreenState extends State<HomeScreen> {
         ],
       ),
       body: ListView(
+        key: ValueKey(mode),
         padding: EdgeInsets.zero,
         children: [
+          const ZoneEventsStrip(),
           _Hero(color: color, name: name, prim: prim, sec: sec, level: level),
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 8, 16, 40),
             child: Column(children: [
               const GameWatcher(),
-              if (kTableMode) const TableWatcher(),
-              if (kTableMode) const TurnBar(),
+              const TableWatcher(), // turni al tavolo; orologio dei giri e zona GPS dal vivo
+              const TurnBar(),
               const StatusBanner(),
               const SizedBox(height: 8),
               _Tabs(color: color, tab: _tab, onTab: (t) => setState(() => _tab = t)),
@@ -72,18 +95,12 @@ class _HomeScreenState extends State<HomeScreen> {
                 HomeTab.battle => BattleTab(key: ValueKey(_openBattleId), initialBattleId: _openBattleId),
                 HomeTab.bag => const InventoryTab(),
                 HomeTab.map => kTableMode
-                    ? TableTab(
-                        onBattle: (id) => setState(() {
-                          _openBattleId = id;
-                          _tab = HomeTab.battle;
-                        }),
-                      )
-                    : GymsTab(
-                        onBattle: (id) => setState(() {
-                          _openBattleId = id;
-                          _tab = HomeTab.battle;
-                        }),
-                      ),
+                    ? TableTab(onBattle: _openBattle)
+                    // dal vivo: mappa con palestre e zone, poi la partita a zone (eventi, empori, leggendario)
+                    : Column(children: [
+                        GymsTab(onBattle: _openBattle),
+                        TableTab(onBattle: _openBattle),
+                      ]),
               },
             ]),
           ),

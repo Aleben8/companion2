@@ -295,21 +295,6 @@ class _BattleTabState extends State<BattleTab> {
     if (go == true) _run(() => BattleService.flee(battleId: _battleId!, playerKey: myKey));
   }
 
-  String _actionName(String? action, String? move) {
-    switch (action) {
-      case 'attack':
-      case 'attackSpec':
-        return move ?? 'Attacco';
-      case 'defense':
-        return 'Difesa';
-      case 'dodge':
-        return 'Schiva';
-      case 'potion':
-        return 'Pozione';
-    }
-    return '';
-  }
-
   Widget _arena(Map<String, dynamic> d) {
     final me = _s.userName!;
     final myKey = (d['playerA'] as Map?)?['uid'] == me ? 'playerA' : 'playerB';
