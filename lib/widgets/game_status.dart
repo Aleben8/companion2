@@ -137,9 +137,10 @@ class GameWatcher extends StatefulWidget {
 }
 
 class _GameWatcherState extends State<GameWatcher> {
-  StreamSubscription? _userSub, _trapSub, _eventSub;
+  StreamSubscription? _userSub, _trapSub, _alarmSub, _eventSub;
   String? _party;
   List<QueryDocumentSnapshot<Map<String, dynamic>>> _traps = [];
+  List<QueryDocumentSnapshot<Map<String, dynamic>>> _alarms = [];
   final Set<String> _handling = {};
   final Set<String> _seenEvents = {};
   late final String _uid;
@@ -158,9 +159,11 @@ class _GameWatcherState extends State<GameWatcher> {
 
   void _subscribe(String? party) {
     _trapSub?.cancel();
+    _alarmSub?.cancel();
     _eventSub?.cancel();
     _party = party;
     _traps = [];
+    _alarms = [];
     if (party == null) return;
     if (!kTableMode) _trapSub = PartyService.party(party)
         .collection('traps')
@@ -168,6 +171,14 @@ class _GameWatcherState extends State<GameWatcher> {
         .snapshots()
         .listen((s) {
       _traps = s.docs;
+      _checkTraps(context.read<LocationService>());
+    });
+    if (!kTableMode) _alarmSub = PartyService.party(party)
+        .collection('alarms')
+        .where('active', isEqualTo: true)
+        .snapshots()
+        .listen((s) {
+      _alarms = s.docs;
       _checkTraps(context.read<LocationService>());
     });
     _eventSub = PartyService.party(party)
@@ -187,8 +198,21 @@ class _GameWatcherState extends State<GameWatcher> {
     for (final d in fresh) {
       final data = d.data();
       final at = data['at'] is Timestamp ? (data['at'] as Timestamp).toDate() : null;
-      if (data['type'] != 'bell' || data['uid'] == _uid || at == null) continue;
+      if (at == null) continue;
       if (DateTime.now().difference(at).inSeconds > 60) continue;
+      if (data['type'] == 'alarm' && data['ownerUid'] == _uid) {
+        final pos = context.read<LocationService>().position;
+        var where = '';
+        if (data['zone'] != null) {
+          where = ' in ${zoneSpec('${data['zone']}').name}, settore ${data['sector']}';
+        } else if (pos != null && data['lat'] != null) {
+          final lat = (data['lat'] as num).toDouble(), lng = (data['lng'] as num).toDouble();
+          where = ' a ${formatDistance(distanceMeters(pos.latitude, pos.longitude, lat, lng))} da te';
+        }
+        if (mounted) snack(context, '🚨 Il tuo Allarme è scattato$where: è passato ${data['uid']}');
+        continue;
+      }
+      if (data['type'] != 'bell' || data['uid'] == _uid) continue;
       final pos = context.read<LocationService>().position;
       var where = '';
       if (data['zone'] != null) {
@@ -205,8 +229,23 @@ class _GameWatcherState extends State<GameWatcher> {
 
   Future<void> _checkTraps(LocationService loc) async {
     final pos = loc.position;
-    if (pos == null || _party == null || _traps.isEmpty) return;
-    if (ItemService.isActive((await ItemService.userRef(_uid).get()).data()?['trappedUntil'])) return;
+    if (pos == null || _party == null || (_traps.isEmpty && _alarms.isEmpty)) return;
+    final me = (await ItemService.userRef(_uid).get()).data();
+    if (ItemService.isActive(me?['stealthUntil'])) return; // Passo felpato
+    for (final a in _alarms) {
+      final d = a.data();
+      final key = 'alarm:${a.id}';
+      if (d['ownerUid'] == _uid || _handling.contains(key) || d['lat'] == null) continue;
+      final dist = distanceMeters(pos.latitude, pos.longitude, (d['lat'] as num).toDouble(), (d['lng'] as num).toDouble());
+      if (dist > kTrapRadiusMeters) continue;
+      _handling.add(key);
+      try {
+        await ItemService.triggerAlarm(_party!, a.id, _uid);
+      } catch (_) {
+        _handling.remove(key);
+      }
+    }
+    if (ItemService.isActive(me?['trappedUntil'])) return;
     for (final t in _traps) {
       final d = t.data();
       if (d['ownerUid'] == _uid || _handling.contains(t.id)) continue;
@@ -228,6 +267,7 @@ class _GameWatcherState extends State<GameWatcher> {
   void dispose() {
     _userSub?.cancel();
     _trapSub?.cancel();
+    _alarmSub?.cancel();
     _eventSub?.cancel();
     super.dispose();
   }

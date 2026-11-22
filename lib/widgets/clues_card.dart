@@ -1,5 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
+
+import '../items.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:provider/provider.dart';
 
@@ -331,9 +333,9 @@ class _CluesCardState extends State<CluesCard> {
                             if (!mounted) return;
                             snack(
                               context,
-                              bonus != null
-                                  ? '🎁 Indizio dichiarato! Strumento bonus: $bonus'
-                                  : 'Indizio dichiarato (era destinato a te: nessun bonus)',
+                              bonus != null && bonus.isNotEmpty
+                                  ? '🎁 Indizio dichiarato! +$kCoinsDeclare 🪙 e strumento bonus: $bonus'
+                                  : 'Indizio dichiarato: +$kCoinsDeclare 🪙 (era destinato a te: nessuno strumento bonus)',
                             );
                           }),
                 ),

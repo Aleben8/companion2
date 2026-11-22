@@ -29,16 +29,19 @@ class _ClueSearchButtonState extends State<ClueSearchButton> {
     try {
       Position? pos;
       if (!kTableMode) pos = await context.read<LocationService>().current();
-      final found = await ClueService.search(party: widget.party, uid: widget.uid, pos: pos);
+      final res = await ClueService.search(party: widget.party, uid: widget.uid, pos: pos);
+      final found = res.clues;
       if (!mounted) return;
       await showDialog<void>(
         context: context,
         builder: (ctx) => AlertDialog(
           title: Text(found.isEmpty
-              ? 'Nessun indizio qui'
+              ? (res.item != null ? 'Hai trovato qualcosa!' : 'Nessun indizio qui')
               : 'Hai trovato ${found.length == 1 ? 'un indizio' : '${found.length} indizi'}!'),
           content: found.isEmpty
-              ? const Text('Non c’è niente da raccogliere in questo punto.')
+              ? Text(res.item != null
+                  ? '🎁 Frugando hai trovato uno strumento: ${res.item}'
+                  : 'Non c’è niente da raccogliere in questo punto.')
               : Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
                   for (final c in found) ...[
                     Text('${c['symbol']}${c['number']}', style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w800)),

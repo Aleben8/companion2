@@ -1,0 +1,206 @@
+import 'package:flutter/material.dart';
+import 'package:geolocator/geolocator.dart';
+import 'package:provider/provider.dart';
+
+import '../geo.dart';
+import '../gyms.dart';
+import '../items.dart';
+import '../mode.dart';
+import '../services/item_service.dart';
+import '../services/location_service.dart';
+import '../table/zones.dart';
+import '../theme.dart';
+import '../widgets/common.dart';
+import '../widgets/drop.dart';
+
+/// Emporio e crafting (si apre dalla Borsa).
+///  - Al tavolo: ogni zona ha il suo emporio (assortimento base + la protezione del bioma);
+///    l'Hub ha il mercato centrale con tutti gli strumenti.
+///  - Dal vivo: si compra vicino a una palestra (entro [kGymRadiusMeters]).
+Future<void> showShop(BuildContext context, String uid) => showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (_) => FractionallySizedBox(heightFactor: 0.88, child: _ShopBody(uid: uid)),
+    );
+
+class _ShopBody extends StatefulWidget {
+  final String uid;
+  const _ShopBody({required this.uid});
+  @override
+  State<_ShopBody> createState() => _ShopBodyState();
+}
+
+class _ShopBodyState extends State<_ShopBody> {
+  Future<Position?>? _pos;
+  bool _busy = false;
+
+  @override
+  void initState() {
+    super.initState();
+    if (!kTableMode) _pos = context.read<LocationService>().current();
+  }
+
+  Future<void> _do(Future<void> Function() f, String ok) async {
+    if (_busy) return;
+    setState(() => _busy = true);
+    try {
+      await f();
+      if (mounted) snack(context, ok);
+    } catch (e) {
+      if (mounted) snack(context, '$e'.replaceFirst('Exception: ', ''), error: true);
+    }
+    if (mounted) setState(() => _busy = false);
+  }
+
+  List<ItemDef> get _generalStock =>
+      [for (final i in kItems) if (i.zone == null && (kTableMode || !i.tableOnly)) i];
+
+  /// (titolo, assortimento, motivo per cui è chiuso)
+  ({String title, List<ItemDef> stock, String? closed}) _shop(Map<String, dynamic>? user, Position? pos) {
+    if (kTableMode) {
+      final zone = (user?['pos'] as Map?)?['zone'] as String?;
+      if (zone == null) return (title: 'Emporio', stock: const [], closed: 'Non sei ancora sulla mappa.');
+      final spec = zoneSpec(zone);
+      if (zone == 'hub') return (title: 'Mercato centrale · ${spec.name}', stock: _generalStock, closed: null);
+      final local = <ItemId>[...kBasicStock, if (kZoneShield[zone] != null) kZoneShield[zone]!];
+      return (title: 'Emporio · ${spec.name}', stock: [for (final id in local) itemDef(id)], closed: null);
+    }
+    if (kGymTestMode) return (title: 'Emporio (modalità prova)', stock: _generalStock, closed: null);
+    if (pos == null) return (title: 'Emporio', stock: const [], closed: 'Posizione non disponibile.');
+    GymSpec? nearest;
+    var best = double.infinity;
+    for (final g in kGyms) {
+      final d = distanceMeters(pos.latitude, pos.longitude, g.lat, g.lng);
+      if (d < best) {
+        best = d;
+        nearest = g;
+      }
+    }
+    if (nearest != null && best <= kGymRadiusMeters) {
+      return (title: 'Emporio · ${nearest.name}', stock: _generalStock, closed: null);
+    }
+    return (
+      title: 'Emporio',
+      stock: const [],
+      closed: 'Gli empori sono presso le palestre. La più vicina (${nearest?.name}) è a ${formatDistance(best)}.',
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder<Position?>(
+      future: _pos,
+      builder: (context, posSnap) {
+        return StreamBuilder<Map<String, dynamic>?>(
+          stream: ItemService.watchUser(widget.uid),
+          builder: (context, snap) {
+            final user = snap.data;
+            final inv = ItemService.readInventory(user);
+            final coins = ItemService.coinsOf(user);
+            final full = ItemService.bagCount(inv) >= kBagLimit;
+            final waiting = !kTableMode && posSnap.connectionState != ConnectionState.done;
+            final shop = _shop(user, posSnap.data);
+            return ListView(padding: const EdgeInsets.fromLTRB(16, 0, 16, 24), children: [
+              Text(shop.title, style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w800, color: Pal.ink)),
+              const SizedBox(height: 8),
+              Row(children: [
+                InfoChip('🪙 $coins', color: const Color(0xFFD08A00)),
+                const SizedBox(width: 8),
+                InfoChip('🎒 ${ItemService.bagCount(inv)}/$kBagLimit', color: full ? Pal.bad : Pal.accent),
+              ]),
+              const SizedBox(height: 12),
+              if (waiting)
+                const Center(child: Padding(padding: EdgeInsets.all(24), child: CircularProgressIndicator()))
+              else if (shop.closed != null)
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 16),
+                  child: Text(shop.closed!, style: const TextStyle(color: Pal.sub)),
+                )
+              else
+                for (final item in shop.stock) _row(item, inv, coins, full),
+              const SizedBox(height: 16),
+              const Text('Crafting', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: Pal.ink)),
+              const SizedBox(height: 4),
+              const Text('Unisci strumenti che hai già in borsa (non serve l’emporio).',
+                  style: TextStyle(color: Pal.sub, fontSize: 12)),
+              const SizedBox(height: 8),
+              for (final r in kRecipes) _recipe(r, inv),
+              const SizedBox(height: 16),
+              const Text('Come guadagnare monete e strumenti', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w800)),
+              const SizedBox(height: 4),
+              Text(
+                'Vittorie contro altri giocatori (+$kCoinsPvpWin 🪙), capipalestra (+$kCoinsGymWin 🪙), '
+                'leggendari (+$kCoinsLegendary 🪙), indizi dichiarati (+$kCoinsDeclare 🪙). '
+                'Cercando indizi puoi trovare strumenti, e puoi scambiarli con gli altri giocatori.',
+                style: const TextStyle(color: Pal.sub, fontSize: 12, height: 1.4),
+              ),
+            ]);
+          },
+        );
+      },
+    );
+  }
+
+  Widget _row(ItemDef item, Map<String, int> inv, int coins, bool full) {
+    final can = coins >= item.price && !full && !_busy;
+    return Container(
+      margin: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: item.colors.first, width: 2),
+      ),
+      child: Row(children: [
+        Container(
+          width: 44,
+          height: 44,
+          decoration: BoxDecoration(shape: BoxShape.circle, gradient: LinearGradient(colors: item.colors)),
+          child: Icon(item.icon, color: Colors.white),
+        ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text('${item.name}  ×${inv[item.key] ?? 0}', style: const TextStyle(fontWeight: FontWeight.w800)),
+            Text(item.description,
+                maxLines: 3,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(fontSize: 12, color: Colors.black54)),
+          ]),
+        ),
+        const SizedBox(width: 8),
+        FilledButton(
+          style: FilledButton.styleFrom(backgroundColor: item.colors.first, visualDensity: VisualDensity.compact),
+          onPressed: can ? () => _do(() => ItemService.buy(widget.uid, item.id), '${item.name} acquistato') : null,
+          child: Text('${item.price} 🪙'),
+        ),
+      ]),
+    );
+  }
+
+  Widget _recipe(Recipe r, Map<String, int> inv) {
+    final ok = r.inputs.entries.every((e) => (inv[e.key.name] ?? 0) >= e.value) && !_busy;
+    final out = itemDef(r.output);
+    final ins = r.inputs.entries.map((e) => '${e.value}× ${itemDef(e.key).name}').join(' + ');
+    return Container(
+      margin: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: Pal.line, width: 2),
+      ),
+      child: Row(children: [
+        Icon(out.icon, color: out.colors.first),
+        const SizedBox(width: 10),
+        Expanded(child: Text('$ins  →  ${out.name}', style: const TextStyle(fontWeight: FontWeight.w700))),
+        FilledButton(
+          style: FilledButton.styleFrom(backgroundColor: out.colors.first, visualDensity: VisualDensity.compact),
+          onPressed: ok ? () => _do(() => ItemService.craft(widget.uid, r), '${out.name} creato') : null,
+          child: const Text('Crea'),
+        ),
+      ]),
+    );
+  }
+}

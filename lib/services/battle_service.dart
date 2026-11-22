@@ -153,9 +153,11 @@ class BattleService {
     required String playerKey, // playerA | playerB
     required String action,
     String? moveName,
+    String? itemKey,
   }) async {
     final ref = battleRef(battleId);
     await ref.update({
+      '$playerKey.last_item': action == 'item' ? itemKey : null,
       '$playerKey.last_action': action,
       '$playerKey.last_move_used': (action == 'attack' || action == 'attackSpec') ? moveName : null,
       '$playerKey.turn_ready': true,
@@ -248,10 +250,49 @@ class BattleService {
 
   // -------------------------------------------------------------- oggetti
 
-  /// Pozione in battaglia: consuma l'oggetto e usa il turno per curarsi.
-  static Future<void> usePotion({required String battleId, required String playerKey, required String uid}) async {
-    await ItemService.consume(uid, ItemId.pozione);
-    await chooseAction(battleId: battleId, playerKey: playerKey, action: 'potion');
+  /// Strumenti curativi usabili in battaglia (consumano il turno).
+  static const kBattleConsumables = [ItemId.pozione, ItemId.superPozione, ItemId.elisir, ItemId.antidoto];
+
+  /// Usa un curativo in battaglia: consuma l'oggetto e il turno.
+  static Future<void> useBattleItem({
+    required String battleId,
+    required String playerKey,
+    required String uid,
+    required ItemId item,
+  }) async {
+    if (!kBattleConsumables.contains(item)) throw Exception('Questo strumento non si usa così');
+    await ItemService.consume(uid, item);
+    await chooseAction(battleId: battleId, playerKey: playerKey, action: 'item', itemKey: item.name);
+  }
+
+  /// Compatibilità: Pozione.
+  static Future<void> usePotion({required String battleId, required String playerKey, required String uid}) =>
+      useBattleItem(battleId: battleId, playerKey: playerKey, uid: uid, item: ItemId.pozione);
+
+  /// Oggetti da dichiarare prima del primo turno -> campo sul combattente.
+  static const _prefight = {
+    ItemId.caramella: 'candy',
+    ItemId.amuleto: 'amulet',
+    ItemId.guanto: 'glove',
+  };
+
+  static Future<void> declarePrefight({
+    required String battleId,
+    required String playerKey,
+    required String uid,
+    required ItemId item,
+  }) async {
+    final field = _prefight[item];
+    if (field == null) throw Exception('Questo strumento non si dichiara');
+    final ref = battleRef(battleId);
+    final d = (await ref.get()).data();
+    if (d == null) throw Exception('Battaglia non trovata');
+    if ((d['turn_number'] as num? ?? 0) > 0 || (d['status'] != 'pending' && d['status'] != 'in_progress')) {
+      throw Exception('${itemDef(item).name}: va dichiarato prima dello scontro');
+    }
+    if ((d[playerKey] as Map?)?[field] == true) throw Exception('${itemDef(item).name} già attivo');
+    await ItemService.consume(uid, item);
+    await ref.update({'$playerKey.$field': true});
   }
 
   /// Caramella Rara: va dichiarata prima del primo turno; +[kCandyBonus] ai tiri del giocatore.
@@ -420,13 +461,19 @@ class BattleService {
     }
 
     if (result.winnerUid != null) {
+      if (data['npc'] != true && !result.winnerUid!.startsWith('gym:')) {
+        // Vittoria PvP: monete e, a volte, uno strumento.
+        final drop = _rnd.nextDouble() < kPvpDropChance ? [ItemService.randomDrop(rnd: _rnd)] : <ItemId>[];
+        final txt = await ItemService.grant(result.winnerUid!, coins: kCoinsPvpWin, items: drop);
+        await ref.update({'rewardText': txt, 'rewardFor': result.winnerUid});
+      }
       if (data['npc'] == true) {
         if (data['legendary'] == true) {
           // Leggendario: ricompensa al primo che lo batte.
           if (!result.winnerUid!.startsWith('gym:')) {
             final txt = await TableService.rewardLegendary(
                 data['party'] as String, data['eventId'] as String, result.winnerUid!);
-            if (txt != null) await ref.update({'rewardText': txt});
+            if (txt != null) await ref.update({'rewardText': txt, 'rewardFor': result.winnerUid});
           }
         } else if (!result.winnerUid!.startsWith('gym:')) {
           // Vittoria contro un capopalestra: badge (solo la prima volta).
@@ -436,7 +483,11 @@ class BattleService {
             data['gymName'] as String,
             data['gymType'] as String,
           );
-          if (isNew) await ref.update({'badgeEarned': data['gymName']});
+          if (isNew) {
+            final txt = await ItemService.grant(result.winnerUid!,
+                coins: kCoinsGymWin, items: [ItemService.randomDrop(rnd: _rnd)]);
+            await ref.update({'badgeEarned': data['gymName'], 'rewardText': txt, 'rewardFor': result.winnerUid});
+          }
         }
       }
     }
@@ -458,13 +509,30 @@ class BattleService {
       }
     }
 
-    // Pozione: usa il turno per curarsi (prima che arrivino i danni)
+    // Strumenti: usano il turno (prima che arrivino i danni)
     for (final p in [a, b]) {
-      if (p['last_action'] == 'potion') {
-        final hp = _i(p['current_hp']);
-        final healed = min(kPotionHeal, _i(p['max_hp']) - hp);
-        p['current_hp'] = hp + max(0, healed);
-        log.write('${p['pokemon_name']} usa una Pozione e recupera ${max(0, healed)} PS.\n');
+      if (p['last_action'] != 'item') continue;
+      final name = p['pokemon_name'];
+      switch (p['last_item']) {
+        case 'superPozione':
+          final healedS = max(0, min(kSuperPotionHeal, _i(p['max_hp']) - _i(p['current_hp'])));
+          p['current_hp'] = _i(p['current_hp']) + healedS;
+          log.write('$name usa una Super Pozione e recupera $healedS PS.\n');
+        case 'elisir':
+          final gained = max(0, min(kEnergyElixir, _i(p['max_energies']) - _i(p['current_energies'])));
+          p['current_energies'] = _i(p['current_energies']) + gained;
+          log.write('$name usa un Elisir e recupera $gained energie.\n');
+        case 'antidoto':
+          if (p['stato'] != null) {
+            p.remove('stato');
+            log.write('$name usa un Antidoto: gli status alterati sono rimossi.\n');
+          } else {
+            log.write('$name usa un Antidoto, ma non aveva status alterati.\n');
+          }
+        default: // pozione
+          final healedP = max(0, min(kPotionHeal, _i(p['max_hp']) - _i(p['current_hp'])));
+          p['current_hp'] = _i(p['current_hp']) + healedP;
+          log.write('$name usa una Pozione e recupera $healedP PS.\n');
       }
     }
 
@@ -503,10 +571,13 @@ class BattleService {
       if (roll.category == 'Nullo') total = 0; // tiro 1 = attacco Nullo
       final zb = zoneBonus[(move?['MoveType'] ?? '').toString().trim().toLowerCase()] ?? 0;
       if (total > 0 && zb > 0) total += zb; // bonus di zona (evento attivo)
+      final glove = total > 0 && atk['glove'] == true;
+      if (glove) total += kGloveDamage; // Guanto
 
       log.write('${atk['pokemon_name']} lancia $moveName '
           '(${roll.category}, Dado: ${roll.rawDice}${roll.dice != roll.rawDice ? '+${roll.dice - roll.rawDice}' : ''}).\n');
       if (zb > 0 && total > 0) log.write('Bonus di zona: +$zb.\n');
+      if (glove) log.write('Il Guanto aggiunge +$kGloveDamage al danno.\n');
       if (roll.elementalModifier > 0) {
         log.write('È super efficace! (+${roll.elementalModifier})\n');
       } else if (roll.elementalModifier < 0) {
@@ -530,8 +601,13 @@ class BattleService {
       }
 
       if (roll.statusTriggered && defAction != 'dodge' && roll.status != null) {
+        if (def['amulet'] == true) {
+          def['amulet'] = false; // l'Amuleto blocca il primo status
+          log.write("L'Amuleto di ${def['pokemon_name']} blocca lo status alterato!\n");
+        } else {
         def['stato'] = _copy(roll.status);
         log.write('${def['pokemon_name']} è stato affetto da ${roll.status!['type']}.\n');
+        }
       }
     }
 
@@ -597,6 +673,7 @@ class BattleService {
         updates['$k.$s'] = _i(p[s]);
       }
       updates['$k.stato'] = p['stato'] ?? FieldValue.delete();
+      if (p['amulet'] == false) updates['$k.amulet'] = false;
     }
     updates['turn_number'] = FieldValue.increment(1);
     updates['last_turn_log'] = log.toString();

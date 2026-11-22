@@ -74,6 +74,11 @@ class TableService {
     for (final d in (await trapsCol(party).get()).docs) {
       batch.delete(d.reference);
     }
+    for (final name in ['alarms', 'traces', 'trades']) {
+      for (final d in (await PartyService.party(party).collection(name).get()).docs) {
+        batch.delete(d.reference);
+      }
+    }
     batch.set(stateRef(party), {
       'started': true,
       'round': 1,
@@ -95,6 +100,9 @@ class TableService {
           'koUntil': FieldValue.delete(),
           'trappedUntil': FieldValue.delete(),
           'fleeBlocks': FieldValue.delete(),
+          'stealthUntil': FieldValue.delete(),
+          'shield': FieldValue.delete(),
+          'coins': kStartingCoins,
         },
         SetOptions(merge: true),
       );
@@ -218,9 +226,9 @@ class TableService {
   }
 
   /// Costo (in azioni) di uno spostamento verso [zone], dati gli eventi attivi.
-  static int moveCost(List<Map<String, dynamic>> events, String? fromZone, String zone) {
+  static int moveCost(List<Map<String, dynamic>> events, String? fromZone, String zone, {String? shield}) {
     var cost = kMoveActionCost;
-    if (fromZone != zone) {
+    if (fromZone != zone && shield != zone) {
       for (final e in events) {
         if (e['zone'] == zone && e['status'] == 'active') cost += eventDef(e['defId'] as String).moveExtra;
       }
@@ -228,7 +236,9 @@ class TableService {
     return cost;
   }
 
-  static Set<int> blockedSectors(List<Map<String, dynamic>> events, String zone) => {
+  static Set<int> blockedSectors(List<Map<String, dynamic>> events, String zone, {String? shield}) => shield == zone
+      ? <int>{}
+      : {
         for (final e in events)
           if (e['zone'] == zone && e['status'] == 'active')
             for (final b in (e['blocked'] as List? ?? [])) _i(b),
@@ -244,17 +254,54 @@ class TableService {
     final spec = zoneSpec(zone);
     if (sector < 1 || sector > spec.sectors) throw Exception('Settore non valido');
     final events = await activeEvents(party);
-    if (blockedSectors(events, zone).contains(sector)) {
+    final me = (await ItemService.userRef(uid).get()).data();
+    final shield = ItemService.shieldZone(me);
+    if (blockedSectors(events, zone, shield: shield).contains(sector)) {
       throw Exception('Il settore $sector di ${spec.name} è bloccato');
     }
-    final cur = ((await ItemService.userRef(uid).get()).data()?['pos']) as Map?;
+    final cur = me?['pos'] as Map?;
     if (cur?['zone'] == zone && _i(cur?['sector']) == sector) throw Exception('Sei già in questo settore');
-    final cost = moveCost(events, cur?['zone'] as String?, zone);
+    final cost = moveCost(events, cur?['zone'] as String?, zone, shield: shield);
     await _spend(party, uid, cost, setPos: {'zone': zone, 'sector': sector});
+    if (ItemService.isActive(me?['stealthUntil'])) return null; // Passo felpato: niente tracce, trappole o allarmi
+    await ItemService.addTrace(party, uid, {
+      'kind': 'move',
+      'fromZone': cur?['zone'],
+      'fromSector': cur?['sector'],
+      'zone': zone,
+      'sector': sector,
+    });
+    await _checkAlarms(party, uid, zone, sector);
     if (await _checkTrap(party, uid, zone, sector)) {
       return 'Sei finito in una Trappola! Salterai il prossimo turno, a meno di usare una Fune di fuga.';
     }
     return null;
+  }
+
+  static Future<void> _checkAlarms(String party, String uid, String zone, int sector) async {
+    final q = await PartyService.party(party)
+        .collection('alarms')
+        .where('active', isEqualTo: true)
+        .where('zone', isEqualTo: zone)
+        .where('sector', isEqualTo: sector)
+        .get();
+    for (final a in q.docs) {
+      await ItemService.triggerAlarm(party, a.id, uid);
+    }
+  }
+
+  /// Controlla (senza modificare nulla) che sia il turno del giocatore.
+  static Future<void> assertMyTurn(String party, String uid) async =>
+      _checkTurn((await stateRef(party).get()).data(), uid);
+
+  /// Clessidra: aggiunge al turno corrente altre azioni (quante ne ha un turno).
+  static Future<void> grantActions(String party, String uid) {
+    final ref = stateRef(party);
+    return _db.runTransaction<void>((tx) async {
+      final s = (await tx.get(ref)).data();
+      _checkTurn(s, uid);
+      tx.update(ref, {'actionsLeft': _i(s!['actionsLeft']) + _i(s['actionsPerTurn'])});
+    });
   }
 
   static Future<bool> _checkTrap(String party, String uid, String zone, int sector) async {
@@ -286,9 +333,10 @@ class TableService {
   /// Bonus di danno per tipo di mossa nella zona del giocatore (chiavi in minuscolo).
   static Future<Map<String, int>> zoneBonusFor(String? party, String uid) async {
     if (!kTableMode || party == null) return {};
-    final pos = (await ItemService.userRef(uid).get()).data()?['pos'] as Map?;
+    final user = (await ItemService.userRef(uid).get()).data();
+    final pos = user?['pos'] as Map?;
     final zone = pos?['zone'];
-    if (zone == null) return {};
+    if (zone == null || ItemService.shieldZone(user) == zone) return {};
     final out = <String, int>{};
     for (final e in await activeEvents(party)) {
       if (e['zone'] != zone) continue;
@@ -340,8 +388,9 @@ class TableService {
     if (def.actionPenalty > 0) {
       final players = await PartyService.players(party).get();
       for (final p in players.docs) {
-        final pos = (await ItemService.userRef(p.id).get()).data()?['pos'] as Map?;
-        if (pos?['zone'] == zone) {
+        final user = (await ItemService.userRef(p.id).get()).data();
+        final pos = user?['pos'] as Map?;
+        if (pos?['zone'] == zone && ItemService.shieldZone(user) != zone) {
           await ItemService.userRef(p.id)
               .set({'actionPenalty': FieldValue.increment(def.actionPenalty)}, SetOptions(merge: true));
         }
@@ -363,10 +412,10 @@ class TableService {
       if ((u['pos'] as Map?)?['zone'] != e['zone']) throw Exception('Devi essere nella zona dell’evento');
       final claimed = List<String>.from(e['claimedBy'] as List? ?? []);
       if (claimed.contains(uid)) throw Exception('Hai già preso il tuo strumento');
-      final pool = def.claimPool ?? ItemId.values.map((i) => i.name).toList();
+      final pool = def.claimPool ?? ItemService.dropKeys();
       final id = pool[_rnd.nextInt(pool.length)];
       final inv = ItemService.readInventory(u);
-      inv[id] = (inv[id] ?? 0) + 1;
+      if (!ItemService.addItem(inv, id)) throw Exception('Borsa piena ($kBagLimit oggetti): fai posto e riprova');
       tx.update(ref, {'claimedBy': [...claimed, uid]});
       tx.set(uref, {'inventory': inv}, SetOptions(merge: true));
       got = itemDef(ItemId.values.firstWhere((i) => i.name == id)).name;
@@ -408,13 +457,12 @@ class TableService {
       final inv = ItemService.readInventory(u);
       final names = <String>[];
       for (var i = 0; i < 2; i++) {
-        final id = ItemId.values[_rnd.nextInt(ItemId.values.length)];
-        inv[id.name] = (inv[id.name] ?? 0) + 1;
-        names.add(itemDef(id).name);
+        final id = ItemService.randomDrop(rnd: _rnd);
+        names.add(ItemService.addItem(inv, id.name) ? itemDef(id).name : '${itemDef(id).name} (borsa piena: perso)');
       }
       tx.update(ref, {'defeatedBy': uid, 'status': 'ended'});
-      tx.set(uref, {'inventory': inv}, SetOptions(merge: true));
-      text = 'Leggendario sconfitto! Ricompensa: ${names.join(' e ')}';
+      tx.set(uref, {'inventory': inv, 'coins': ItemService.coinsOf(u) + kCoinsLegendary}, SetOptions(merge: true));
+      text = 'Leggendario sconfitto! Ricompensa: ${names.join(' e ')} e +$kCoinsLegendary 🪙';
     });
     return text;
   }

@@ -181,7 +181,6 @@ class _BattleTabState extends State<BattleTab> {
   }
 
   Widget _waiting(String id, Map<String, dynamic> data) {
-    final candyOn = (data['playerA'] as Map?)?['candy'] == true;
     return DropCard(
       colors: const [Pal.accent, Color(0xFF9C7BE0)],
       child: Column(children: [
@@ -204,19 +203,45 @@ class _BattleTabState extends State<BattleTab> {
         const SizedBox(height: 8),
         const CircularProgressIndicator(strokeWidth: 5),
         const SizedBox(height: 18),
-        if (candyOn)
-          const InfoChip('🍬 Caramella Rara attiva', color: Color(0xFFE56B8F))
-        else
-          DropButton(
-            label: 'Usa Caramella Rara',
-            colors: itemDef(ItemId.caramella).colors,
-            onTap: () => _run(
-              () => BattleService.declareCandy(battleId: id, playerKey: 'playerA', uid: _s.userName!),
-              ok: 'Caramella Rara dichiarata: +$kCandyBonus ai tuoi tiri',
-            ),
-          ),
+        _prefight(id, 'playerA', data['playerA'] as Map?),
         TextButton(onPressed: _leave, child: const Text('Esci')),
       ]),
+    );
+  }
+
+  /// Strumenti da dichiarare prima del primo turno (Caramella, Amuleto, Guanto).
+  Widget _prefight(String id, String key, Map? mine) {
+    const items = {ItemId.caramella: 'candy', ItemId.amuleto: 'amulet', ItemId.guanto: 'glove'};
+    return StreamBuilder<Map<String, dynamic>?>(
+      stream: ItemService.watchUser(_s.userName!),
+      builder: (context, snap) {
+        final inv = ItemService.readInventory(snap.data);
+        final children = <Widget>[];
+        items.forEach((item, field) {
+          final def = itemDef(item);
+          if (mine?[field] == true) {
+            children.add(Padding(
+              padding: const EdgeInsets.only(bottom: 6),
+              child: InfoChip('${def.name} attivo', color: def.colors.first),
+            ));
+          } else if ((inv[item.name] ?? 0) > 0) {
+            children.add(Padding(
+              padding: const EdgeInsets.only(bottom: 6),
+              child: DropButton(
+                label: 'Usa ${def.name}  ×${inv[item.name]}',
+                icon: def.icon,
+                colors: def.colors,
+                onTap: () => _run(
+                  () => BattleService.declarePrefight(battleId: id, playerKey: key, uid: _s.userName!, item: item),
+                  ok: '${def.name} dichiarato',
+                ),
+              ),
+            ));
+          }
+        });
+        if (children.isEmpty) return const SizedBox.shrink();
+        return Column(children: children);
+      },
     );
   }
 
@@ -240,8 +265,9 @@ class _BattleTabState extends State<BattleTab> {
     HapticFeedback.mediumImpact();
     setState(() => _sending = true);
     try {
-      if (_selAction == 'potion') {
-        await BattleService.usePotion(battleId: _battleId!, playerKey: myKey, uid: me);
+      if (_selAction == 'item') {
+        await BattleService.useBattleItem(
+            battleId: _battleId!, playerKey: myKey, uid: me, item: ItemId.values.byName(_selMove!));
       } else {
         await BattleService.chooseAction(
             battleId: _battleId!, playerKey: myKey, action: _selAction!, moveName: _selMove);
@@ -345,7 +371,6 @@ class _BattleTabState extends State<BattleTab> {
               final energy = (mine['current_energies'] as num?)?.round() ?? 0;
               final hp = (mine['current_hp'] as num?)?.round() ?? 0;
               final maxHp = (mine['max_hp'] as num?)?.round() ?? kBaseHp;
-              final potions = inv['pozione'] ?? 0;
 
               bool isSel(String a, [String? m]) => chosenAction == a && chosenMove == m;
 
@@ -409,41 +434,41 @@ class _BattleTabState extends State<BattleTab> {
                   expanded: footer(isSel('dodge'), const [Color(0xFF757575), Color(0xFFBDBDBD)]),
                   onTap: locked ? null : () => _select('dodge'),
                 ),
-                _ActionTile(
-                  title: 'Pozione  ×$potions',
-                  subtitle: '+$kPotionHeal PS, richiede il turno',
-                  icon: Icons.local_pharmacy,
-                  colors: itemDef(ItemId.pozione).colors,
-                  selected: isSel('potion'),
-                  dimmed: (locked && !isSel('potion')) || potions <= 0 || hp >= maxHp,
-                  expanded: footer(isSel('potion'), itemDef(ItemId.pozione).colors),
-                  onTap: locked
-                      ? null
-                      : () => potions <= 0
-                          ? snack(context, 'Pozioni esaurite')
-                          : hp >= maxHp
-                              ? snack(context, 'I PS sono già al massimo')
-                              : _select('potion'),
-                ),
+                for (final it in BattleService.kBattleConsumables)
+                  if ((inv[it.name] ?? 0) > 0)
+                    Builder(builder: (_) {
+                      final def = itemDef(it);
+                      final qty = inv[it.name] ?? 0;
+                      final sel = isSel('item', it.name);
+                      final String? why = switch (it) {
+                        ItemId.pozione => hp >= maxHp ? 'I PS sono già al massimo' : null,
+                        ItemId.superPozione => hp >= maxHp ? 'I PS sono già al massimo' : null,
+                        ItemId.elisir => energy >= ((mine['max_energies'] as num?)?.round() ?? energy)
+                            ? "L'energia è già al massimo"
+                            : null,
+                        ItemId.antidoto => mine['stato'] == null ? 'Nessuno status da rimuovere' : null,
+                        _ => null,
+                      };
+                      final sub = switch (it) {
+                        ItemId.pozione => '+$kPotionHeal PS, richiede il turno',
+                        ItemId.superPozione => '+$kSuperPotionHeal PS, richiede il turno',
+                        ItemId.elisir => '+$kEnergyElixir energie, richiede il turno',
+                        _ => 'Rimuove DOT e malus, richiede il turno',
+                      };
+                      return _ActionTile(
+                        title: '${def.name}  ×$qty',
+                        subtitle: sub,
+                        icon: def.icon,
+                        colors: def.colors,
+                        selected: sel,
+                        dimmed: (locked && !sel) || why != null,
+                        expanded: footer(sel, def.colors),
+                        onTap: locked ? null : () => why != null ? snack(context, why) : _select('item', move: it.name),
+                      );
+                    }),
                 const SectionTitle('Uso immediato'),
+                if (turn == 0) _prefight(_battleId!, myKey, mine),
                 Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  if (turn == 0 && mine['candy'] != true)
-                    Expanded(
-                      child: _ActionTile(
-                        title: 'Caramella  ×${inv['caramella'] ?? 0}',
-                        subtitle: '+$kCandyBonus ai tiri, prima del 1º turno',
-                        icon: Icons.cake,
-                        colors: itemDef(ItemId.caramella).colors,
-                        dimmed: (inv['caramella'] ?? 0) <= 0,
-                        onTap: (inv['caramella'] ?? 0) <= 0
-                            ? null
-                            : () => _run(
-                                  () => BattleService.declareCandy(battleId: _battleId!, playerKey: myKey, uid: me),
-                                  ok: 'Caramella Rara dichiarata: +$kCandyBonus ai tuoi tiri',
-                                ),
-                      ),
-                    ),
-                  if (turn == 0 && mine['candy'] != true) const SizedBox(width: 12),
                   Expanded(
                     child: _ActionTile(
                       title: 'Fune  ×${inv['fune'] ?? 0}',
@@ -868,7 +893,7 @@ class _ResultCard extends StatelessWidget {
           const SizedBox(height: 8),
           InfoChip('🏅 Badge ottenuto: ${data['badgeEarned']}', color: const Color(0xFFD08A00)),
         ],
-        if (data['rewardText'] != null) ...[
+        if (data['rewardText'] != null && (data['rewardFor'] == null || data['rewardFor'] == me)) ...[
           const SizedBox(height: 8),
           InfoChip('🎁 ${data['rewardText']}', color: const Color(0xFFD08A00)),
         ],

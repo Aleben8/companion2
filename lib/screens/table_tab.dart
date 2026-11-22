@@ -34,6 +34,7 @@ class _TableTabState extends State<TableTab> {
   bool _master = false;
   bool _loading = true;
   bool _busy = false;
+  String? _shield; // zona protetta da un'Ombrello di bioma attivo
 
   Session get _s => context.read<Session>();
 
@@ -108,11 +109,11 @@ class _TableTabState extends State<TableTab> {
       snack(context, 'Non è il tuo turno');
       return;
     }
-    if (TableService.blockedSectors(events, z.id).contains(sector)) {
+    if (TableService.blockedSectors(events, z.id, shield: _shield).contains(sector)) {
       snack(context, 'Questo settore è bloccato');
       return;
     }
-    final cost = TableService.moveCost(events, pos?['zone'] as String?, z.id);
+    final cost = TableService.moveCost(events, pos?['zone'] as String?, z.id, shield: _shield);
     final go = await _confirm('Spostamento', 'Vai in ${z.name}, settore $sector?\nCosto: $cost ${cost == 1 ? 'azione' : 'azioni'}.', 'Vai');
     if (!go) return;
     await _run(() async {
@@ -150,6 +151,7 @@ class _TableTabState extends State<TableTab> {
               stream: ItemService.watchUser(me),
               builder: (context, uSnap) {
                 final pos = uSnap.data?['pos'] as Map?;
+                _shield = ItemService.shieldZone(uSnap.data);
                 return Column(children: [
                   const SectionTitle('Tavolo'),
                   if (_master) _masterTools(started),
@@ -359,7 +361,7 @@ class _TableTabState extends State<TableTab> {
   Widget _zoneCard(ZoneSpec z, Map? pos, List<Map<String, dynamic>> events, Map<String, dynamic> st, String me) {
     final colors = typeColors(z.type);
     final mineZone = pos?['zone'] == z.id;
-    final blocked = TableService.blockedSectors(events, z.id);
+    final blocked = TableService.blockedSectors(events, z.id, shield: _shield);
     final zoneEvents = events.where((e) => e['zone'] == z.id && (e['status'] == 'active' || e['status'] == 'announced')).toList();
     return DropCard(
       colors: colors,

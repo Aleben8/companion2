@@ -201,6 +201,38 @@ Nuove regole introdotte per far funzionare gli strumenti:
 - **Sconfitta = Pokémon esausto per 5 minuti** (non può combattere); il Revitalizzante lo cura subito.
 - Il Radar mostra la posizione **al momento dell'uso**, non in tempo reale.
 
+## Strumenti, monete ed Emporio (v8)
+
+Tutte le regole numeriche sono in `lib/items.dart` (costanti `k...`).
+
+**Borsa**: massimo `kBagLimit` (12) oggetti. Si parte con i primi 8 strumenti e `kStartingCoins` (5) monete. Se la borsa è piena un premio va perso (la app lo segnala).
+
+| Categoria | Strumenti |
+|---|---|
+| Base | Repellente, Caramella Rara, Fune di fuga, Trappola, Pozione, Calmanella, Revitalizzante, Radar |
+| Esplorazione | **Lente** (tracce: zone già battute e direzioni degli altri), **Sensore** (quanti indizi nascosti qui), **Allarme** (come la Trappola ma avvisa in segreto, non blocca), **Radar meteo** (eventi dei prossimi 2 giri, solo tavolo), **Passo felpato** (ignora Trappole/Allarmi, nessuna traccia, invisibile al Radar), **Clessidra** (azioni extra nel turno, solo tavolo), **Chiave** (sblocca un settore chiuso da frana/marea, solo tavolo) |
+| Battaglia | **Elisir** (+5 energie), **Super Pozione** (+20 PS), **Antidoto** (toglie DOT e malus), **Amuleto** (blocca il primo status, da dichiarare prima del 1º turno), **Guanto** (+2 danno per uno scontro, da dichiarare prima del 1º turno) |
+| Protezioni di bioma (solo tavolo) | Corda da scalata (Canyon), Bussola (Giungla), Tuta da neve (Regione innevata), Tuta ignifuga (Vulcano), Zattera (Isola), Parafulmine (Colline): per 2 giri annullano gli effetti dell'evento di quella zona (costo extra, settori bloccati, azioni perse, nebbia per il tuo Radar, bonus di tipo) |
+
+Il Radar meteo sostituisce il Telescopio.
+
+**Emporio** (bottone nella Borsa)
+- Tavolo: ogni zona ha il suo emporio (Pozione, Fune, Antidoto, Elisir, Sensore + la protezione del suo bioma); l'Hub è il mercato centrale con tutti gli strumenti. Serve essere nella zona.
+- Dal vivo: si compra entro `kGymRadiusMeters` da una palestra (tutti gli strumenti non da tavolo).
+- Prezzi: `price` di ogni `ItemDef`.
+
+**Come si ottengono**
+- *Cerca* senza indizi: `kSearchItemChance` (15%) di trovare uno strumento.
+- Dichiarare un indizio non tuo: strumento bonus + monete (`kCoinsDeclare`).
+- Vittoria PvP: `kCoinsPvpWin` monete e `kPvpDropChance` di uno strumento. Primo badge di una palestra: `kCoinsGymWin` monete + 1 strumento. Leggendario: 2 strumenti + `kCoinsLegendary`.
+- Eventi Mercato/Raccolto (già presenti).
+- **Scambi** tra giocatori dalla Borsa ("Scambia"): proposta con o senza richiesta in cambio; al tavolo bisogna essere nella stessa zona.
+- **Crafting** (nell'Emporio): 2 Pozioni → Super Pozione; 2 Caramelle → Guanto; Pozione + Elisir → Revitalizzante (`kRecipes`).
+- Nuove partite al tavolo azzerano monete, protezioni e tracce.
+
+**Tracce (per la Lente)**: ogni spostamento e ogni ricerca scrive un documento in `Party/{codice}/traces` (non lo fa chi ha il Passo felpato). Gli Allarmi stanno in `Party/{codice}/alarms`, gli scambi in `Party/{codice}/trades`.
+Gli strumenti nuovi usano le icone Material finché non aggiungi gli sprite in `assets/images/items/<chiave>.png` (chiavi: lente, sensore, allarme, meteo, passoFelpato, clessidra, chiave, elisir, superPozione, antidoto, amuleto, guanto, corda, bussola, tutaNeve, tutaIgnifuga, zattera, parafulmine).
+
 ## Posizione (GPS)
 
 Usata da Radar, Calmanella e Trappola. Funziona solo con l'app aperta in primo piano e viene salvata

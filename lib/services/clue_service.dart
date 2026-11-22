@@ -120,7 +120,7 @@ class ClueService {
 
   /// Cerca gli indizi nascosti qui: al tavolo nel tuo settore (costa 1 azione),
   /// dal vivo entro [kClueRadiusMeters]. Gli indizi trovati passano a te (i tuoi non si trovano).
-  static Future<List<Map<String, dynamic>>> search({
+  static Future<SearchResult> search({
     required String party,
     required String uid,
     Position? pos,
@@ -135,6 +135,15 @@ class ClueService {
     } else if (pos == null) {
       throw Exception('Posizione non disponibile');
     }
+
+    // Traccia per la Lente: dove hai cercato.
+    await ItemService.addTrace(
+      party,
+      uid,
+      kTableMode
+          ? {'kind': 'search', 'zone': myPos!['zone'], 'sector': myPos['sector']}
+          : {'kind': 'search', 'lat': pos!.latitude, 'lng': pos.longitude},
+    );
 
     final q = await clues(party).where('status', isEqualTo: 'hidden').get();
     final found = <Map<String, dynamic>>[];
@@ -156,7 +165,15 @@ class ClueService {
       });
       if (ok) found.add({...c, 'id': d.id});
     }
-    return found;
+
+    // Nessun indizio: con una piccola probabilità trovi invece uno strumento.
+    String? item;
+    if (found.isEmpty && _rnd.nextDouble() < kSearchItemChance) {
+      final id = ItemService.randomDrop(rnd: _rnd);
+      final txt = await ItemService.grant(uid, items: [id]);
+      item = txt;
+    }
+    return SearchResult(found, item);
   }
 
   /// "Ho preso la carta": dichiara di avere l'indizio (lo vedono tutti, senza il testo).
@@ -172,12 +189,21 @@ class ClueService {
       if (c['declared'] == true) return null;
       final bonus = c['targetUid'] != uid;
       tx.update(ref, {'declared': true, 'declaredAt': FieldValue.serverTimestamp(), 'bonusGiven': bonus});
-      if (!bonus) return null;
-      final id = ItemId.values[_rnd.nextInt(ItemId.values.length)];
       final inv = ItemService.readInventory(u);
-      inv[id.name] = (inv[id.name] ?? 0) + 1;
-      tx.set(uref, {'inventory': inv}, SetOptions(merge: true));
-      return itemDef(id).name;
+      String? name;
+      if (bonus) {
+        final id = ItemService.randomDrop(rnd: _rnd);
+        name = ItemService.addItem(inv, id.name) ? itemDef(id).name : '${itemDef(id).name} (borsa piena: perso)';
+      }
+      tx.set(uref, {'inventory': inv, 'coins': ItemService.coinsOf(u) + kCoinsDeclare}, SetOptions(merge: true));
+      return name ?? '';
     });
   }
+}
+
+/// Esito di una ricerca: indizi trovati e, se non c'erano indizi, l'eventuale strumento trovato.
+class SearchResult {
+  final List<Map<String, dynamic>> clues;
+  final String? item; // testo del premio ("Pozione")
+  const SearchResult(this.clues, this.item);
 }
