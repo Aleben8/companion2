@@ -30,8 +30,8 @@ class ModeService extends ChangeNotifier {
         _set(kDefaultMode);
         return;
       }
-      _partySub = PartyService.party(party).snapshots().listen((s) {
-        final m = s.data()?['mode'];
+      _partySub = PartyService.watchParty(party).listen((d) {
+        final m = d?['mode'];
         _set(m == kModeLive || m == kModeTable ? m as String : kDefaultMode);
       });
     });

@@ -28,6 +28,7 @@ class TableClock {
 const int kActionsOdd = 2; // azioni a turno con numero DISPARI di giocatori
 const int kActionsEven = 3; // azioni a turno con numero PARI di giocatori
 const int kMoveActionCost = 1; // costo di uno spostamento (in azioni)
+const int kMaxTablePlayers = 9; // al tavolo (dal vivo non c'è limite)
 
 // ---- Regole dal vivo (modificale qui) ---------------------------------------
 // Dal vivo non ci sono turni: il giro avanza da solo ogni N minuti e le azioni diventano attese.

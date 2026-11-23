@@ -63,6 +63,20 @@ class _ShopBodyState extends State<_ShopBody> {
     if (kTableMode || zone != null) {
       if (zone == null) return (title: 'Emporio', stock: const [], closed: 'Non sei ancora sulla mappa.');
       final spec = zoneSpec(zone);
+      if (kTableMode) {
+        // al tavolo l'emporio sta nei settori cittadini
+        final sector = ((user?['pos'] as Map?)?['sector'] as num?)?.toInt() ?? 0;
+        if (TableLayout.typeOf(zone, sector) != SectorType.cittadino) {
+          final city = TableLayout.firstOf(zone, SectorType.cittadino);
+          return (
+            title: 'Emporio · ${spec.name}',
+            stock: const [],
+            closed: city == null
+                ? 'In ${spec.name} non ci sono settori cittadini: qui non c’è un emporio.'
+                : 'L’emporio è nei settori cittadini: spostati nel settore $city di ${spec.name}.',
+          );
+        }
+      }
       if (zone == 'hub') return (title: 'Mercato centrale · ${spec.name}', stock: _generalStock, closed: null);
       final local = <ItemId>[...kBasicStock, if (kZoneShield[zone] != null) kZoneShield[zone]!];
       return (title: 'Emporio · ${spec.name}', stock: [for (final id in local) itemDef(id)], closed: null);

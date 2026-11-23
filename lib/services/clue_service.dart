@@ -6,9 +6,11 @@ import 'package:geolocator/geolocator.dart';
 import '../geo.dart';
 import '../items.dart';
 import '../mode.dart';
+import '../table/sectors.dart';
 import 'item_service.dart';
 import 'live_service.dart';
 import 'party_service.dart';
+import 'shared_stream.dart';
 import 'table_service.dart';
 
 /// Raggio (dal vivo) entro cui si trova un indizio. Il GPS ha un'incertezza di qualche metro:
@@ -36,9 +38,10 @@ class ClueService {
       PartyService.party(party).collection('clues');
 
   static Stream<String?> watchPhase(String party) =>
-      PartyService.party(party).snapshots().map((s) => s.data()?['cluePhase'] as String?);
+      shared('cluePhase:$party', () => PartyService.watchParty(party).map((d) => d?['cluePhase'] as String?));
 
-  static Stream<QuerySnapshot<Map<String, dynamic>>> watchClues(String party) => clues(party).snapshots();
+  static Stream<QuerySnapshot<Map<String, dynamic>>> watchClues(String party) =>
+      shared('clues:$party', () => clues(party).snapshots());
 
   static String symbolFor(int i) {
     final base = kClueSymbols[i % kClueSymbols.length];
@@ -129,9 +132,14 @@ class ClueService {
     final phase = (await PartyService.party(party).get()).data()?['cluePhase'];
     if (phase != 'playing') throw Exception('Gli indizi non sono ancora in gioco');
     Map? myPos;
+    SectorType? sectorType;
     if (kTableMode) {
-      myPos = (await ItemService.userRef(uid).get()).data()?['pos'] as Map?;
+      final me = (await ItemService.userRef(uid).get()).data();
+      myPos = me?['pos'] as Map?;
       if (myPos == null) throw Exception('Non sei ancora sulla mappa');
+      if (me?['wildEncounter'] is Map) throw Exception('Prima affronta o sfuggi al Pokémon selvatico');
+      await TableService.loadLayout(party);
+      sectorType = TableLayout.typeOf('${myPos['zone']}', (myPos['sector'] as num).toInt());
       await TableService.spendAction(party, uid); // cercare è un'azione
     } else {
       if (pos == null) throw Exception('Posizione non disponibile');
@@ -159,7 +167,7 @@ class ClueService {
       party,
       uid,
       kTableMode
-          ? {'kind': 'search', 'zone': myPos!['zone'], 'sector': myPos['sector']}
+          ? {'kind': 'search', 'zone': myPos!['zone'], 'sector': myPos['sector'], 'strength': traceStrength(sectorType)}
           : {'kind': 'search', 'lat': pos!.latitude, 'lng': pos.longitude},
     );
 
@@ -186,7 +194,9 @@ class ClueService {
 
     // Nessun indizio: con una piccola probabilità trovi invece uno strumento.
     String? item;
-    if (found.isEmpty && _rnd.nextDouble() < kSearchItemChance) {
+    // nei settori impervi si trova qualcosa più spesso
+    final itemChance = sectorType == SectorType.impervio ? kImperviousSearchItemChance : kSearchItemChance;
+    if (found.isEmpty && _rnd.nextDouble() < itemChance) {
       final id = ItemService.randomDrop(rnd: _rnd);
       final txt = await ItemService.grant(uid, items: [id]);
       item = txt;

@@ -139,7 +139,7 @@ class _GymsTabState extends State<GymsTab> {
 
   // ------------------------------------------------------------------ UI
 
-  Widget _map(List<QueryDocumentSnapshot<Map<String, dynamic>>> docs, Position? pos, Map badges, Map<String, LiveZone> zones) {
+  Widget _map(List<QueryDocumentSnapshot<Map<String, dynamic>>> docs, Map badges, Map<String, LiveZone> zones) {
     final pts = [
       ...docs.map((d) => LatLng((d['lat'] as num).toDouble(), (d['lng'] as num).toDouble())),
       ...zones.values.map((z) => LatLng(z.lat, z.lng)),
@@ -227,20 +227,28 @@ class _GymsTabState extends State<GymsTab> {
                     ),
                   ),
                 ),
-              if (pos != null)
-                Marker(
-                  point: LatLng(pos.latitude, pos.longitude),
-                  width: 22,
-                  height: 22,
-                  child: Container(
-                    decoration: BoxDecoration(
-                      color: const Color(0xFF2979FF),
-                      shape: BoxShape.circle,
-                      border: Border.all(color: Colors.white, width: 3),
-                    ),
-                  ),
-                ),
             ]),
+            // solo questo strato si aggiorna a ogni posizione GPS (non tutta la mappa)
+            Consumer<LocationService>(
+              builder: (_, loc, __) {
+                final pos = loc.position;
+                return MarkerLayer(markers: [
+                  if (pos != null)
+                    Marker(
+                      point: LatLng(pos.latitude, pos.longitude),
+                      width: 22,
+                      height: 22,
+                      child: Container(
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF2979FF),
+                          shape: BoxShape.circle,
+                          border: Border.all(color: Colors.white, width: 3),
+                        ),
+                      ),
+                    ),
+                ]);
+              },
+            ),
             const RichAttributionWidget(
               attributions: [TextSourceAttribution('© OpenStreetMap contributors')],
             ),
@@ -356,7 +364,6 @@ class _GymsTabState extends State<GymsTab> {
 
   @override
   Widget build(BuildContext context) {
-    final pos = context.watch<LocationService>().position;
     if (_loading) {
       return const Padding(padding: EdgeInsets.all(40), child: Center(child: CircularProgressIndicator()));
     }
@@ -366,8 +373,9 @@ class _GymsTabState extends State<GymsTab> {
         child: Center(child: Text('Entra prima in un party', style: TextStyle(color: Pal.sub))),
       );
     }
-    return StreamBuilder<Map<String, dynamic>?>(
-      stream: ItemService.watchUser(_s.userName!),
+    // solo i badge: la posizione GPS scritta sul profilo non deve ricostruire mappa e schede
+    return StreamBuilder<Map<String, dynamic>>(
+      stream: ItemService.watchUserFields(_s.userName!, const ['badges']),
       builder: (context, userSnap) {
         final raw = userSnap.data?['badges'];
         final badges = raw is Map ? raw : const {};
@@ -384,7 +392,7 @@ class _GymsTabState extends State<GymsTab> {
                   const SizedBox(height: 6),
                   StreamBuilder<Map<String, LiveZone>>(
                     stream: LiveService.watchZones(_party!),
-                    builder: (context, zSnap) => _map(docs, pos, badges, zSnap.data ?? const {}),
+                    builder: (context, zSnap) => _map(docs, badges, zSnap.data ?? const {}),
                   ),
                   if (_master)
                     const Padding(
@@ -405,7 +413,10 @@ class _GymsTabState extends State<GymsTab> {
                         style: TextStyle(color: Pal.sub),
                       ),
                     ),
-                  for (final d in docs) _gymCard(d, pos, badges),
+                  // le distanze cambiano a ogni posizione GPS: si ricostruiscono solo le schede
+                  Consumer<LocationService>(
+                    builder: (_, loc, __) => Column(children: [for (final d in docs) _gymCard(d, loc.position, badges)]),
+                  ),
                 ]);
               },
             );

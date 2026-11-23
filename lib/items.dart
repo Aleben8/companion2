@@ -80,6 +80,7 @@ const int kCoinsPvpWin = 3; // vittoria contro un altro giocatore
 const int kCoinsGymWin = 5; // prima vittoria contro un capopalestra
 const int kCoinsLegendary = 10;
 const int kCoinsDeclare = 2; // dichiarare un indizio
+const int kCoinsWild = 2; // vittoria contro un Pokémon selvatico (settore selvaggio)
 const double kSearchItemChance = 0.15; // "Cerca" senza indizi: probabilità di trovare uno strumento
 const double kPvpDropChance = 0.4; // vittoria PvP: probabilità di uno strumento
 
@@ -90,7 +91,6 @@ const int kGloveDamage = 2; // Guanto
 const double kSensorRadiusMeters = 50; // Sensore dal vivo
 const double kLensRadiusMeters = 50; // Lente dal vivo
 const int kLensMinutes = 20; // quanto vecchie possono essere le tracce (dal vivo)
-const int kTraceRounds = 4; // quanto vecchie possono essere le tracce (tavolo)
 const int kStealthMinutes = 5; // Passo felpato dal vivo
 const int kStealthRounds = 1; // Passo felpato al tavolo (fino a fine giro)
 const int kShieldRounds = 2; // protezione di zona: giro corrente + il successivo

@@ -5,10 +5,12 @@ import 'package:flutter/foundation.dart';
 
 import '../constants.dart';
 import '../items.dart';
+import '../table/sectors.dart';
 import 'gym_service.dart';
 import 'item_service.dart';
 import 'table_service.dart';
 import 'party_service.dart';
+import 'shared_stream.dart';
 
 int _i(dynamic v, [int def = 0]) => v is num ? v.round() : def;
 
@@ -43,15 +45,15 @@ class BattleService {
       _db.collection('Battles').doc(id);
 
   static Stream<DocumentSnapshot<Map<String, dynamic>>> watch(String id) =>
-      battleRef(id).snapshots();
+      shared('battle:$id', () => battleRef(id).snapshots());
 
   // ---------------------------------------------------------------- dati
 
   static Stream<Map<String, Map<String, dynamic>>> watchMoves(String uid, String pk) =>
-      _db.collection('Users').doc(uid).collection('Pokemon').doc(pk)
+      shared('moves:$uid/$pk', () => _db.collection('Users').doc(uid).collection('Pokemon').doc(pk)
           .collection('MoveSet').snapshots().map((s) => {
                 for (final d in s.docs) d.id: d.data(),
-              });
+              }));
 
   static Future<Map<String, Map<String, dynamic>>> loadMoves(String uid, String pk) async {
     final s = await _db.collection('Users').doc(uid).collection('Pokemon').doc(pk)
@@ -162,6 +164,7 @@ class BattleService {
   /// Crea una battaglia in attesa. Codice: `{utente}-{3 caratteri}-{HHmm}`.
   static Future<String> createBattle(String uid, String pk) async {
     await ItemService.assertCanFight(uid);
+    await TableService.assertNotInRefuge(uid); // nei rifugi non si combatte tra giocatori
     final moves = await loadMoves(uid, pk);
     final d = await _pokemonData(uid, pk);
     final now = DateTime.now();
@@ -189,7 +192,10 @@ class BattleService {
     if ((data['playerA'] as Map?)?['uid'] == uid) {
       throw Exception('Non puoi sfidare te stesso');
     }
-    await ItemService.assertCanFight(uid, opponentUid: (data['playerA'] as Map?)?['uid'] as String?);
+    final creator = (data['playerA'] as Map?)?['uid'] as String?;
+    await ItemService.assertCanFight(uid, opponentUid: creator);
+    await TableService.assertNotInRefuge(uid);
+    if (creator != null) await TableService.assertNotInRefuge(creator, me: false);
     await ref.update({
       'status': 'in_progress',
       'playerB': _combatant(uid, pk, d, moves),
@@ -535,7 +541,14 @@ class BattleService {
         await ref.update({'rewardText': txt, 'rewardFor': result.winnerUid});
       }
       if (data['npc'] == true) {
-        if (data['legendary'] == true) {
+        if (data['wild'] == true) {
+          // Pokémon selvatico (settore selvaggio): monete e, a volte, uno strumento. Niente badge.
+          if (!result.winnerUid!.startsWith('gym:')) {
+            final drop = _rnd.nextDouble() < kWildDropChance ? [ItemService.randomDrop(rnd: _rnd)] : <ItemId>[];
+            final txt = await ItemService.grant(result.winnerUid!, coins: kCoinsWild, items: drop);
+            await ref.update({'rewardText': txt, 'rewardFor': result.winnerUid});
+          }
+        } else if (data['legendary'] == true) {
           // Leggendario: ricompensa al primo che lo batte.
           if (!result.winnerUid!.startsWith('gym:')) {
             final txt = await TableService.rewardLegendary(

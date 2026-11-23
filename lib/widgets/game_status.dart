@@ -82,8 +82,9 @@ class StatusBanner extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final uid = context.read<Session>().userName!;
-    return StreamBuilder<Map<String, dynamic>?>(
-      stream: ItemService.watchUser(uid),
+    return StreamBuilder<Map<String, dynamic>>(
+      stream: ItemService.watchUserFields(
+          uid, const ['repellentUntil', 'koUntil', 'trappedUntil', 'trappedSkip', 'busyUntil']),
       builder: (context, snap) {
         final u = snap.data;
         if (u == null) return const SizedBox.shrink();
@@ -243,7 +244,8 @@ class _GameWatcherState extends State<GameWatcher> {
   Future<void> _checkTraps(LocationService loc) async {
     final pos = loc.position;
     if (pos == null || _party == null || (_traps.isEmpty && _alarms.isEmpty)) return;
-    final me = (await ItemService.userRef(_uid).get()).data();
+    // a ogni posizione GPS: si usa il profilo già in memoria invece di rileggerlo dal server
+    final me = ItemService.lastUser(_uid) ?? (await ItemService.userRef(_uid).get()).data();
     if (ItemService.isActive(me?['stealthUntil'])) return; // Passo felpato
     for (final a in _alarms) {
       final d = a.data();

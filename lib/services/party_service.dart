@@ -1,5 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 
+import 'shared_stream.dart';
+
 /// Struttura Firestore:
 ///   Party/{codice}                      -> { cluePhase, gameStarted, ... }
 ///   Party/{codice}/players/{userId}     -> { userId, joinedAt, isMaster, symbol, cluesReady }
@@ -11,6 +13,14 @@ class PartyService {
       _db.collection('Party').doc(code);
   static CollectionReference<Map<String, dynamic>> players(String code) =>
       party(code).collection('players');
+
+  // Stream condivisi (vedi shared_stream.dart): usali nei build al posto di `.snapshots()`.
+  static Stream<Map<String, dynamic>?> watchParty(String code) =>
+      shared('party:$code', () => party(code).snapshots().map((s) => s.data()));
+  static Stream<QuerySnapshot<Map<String, dynamic>>> watchPlayers(String code) =>
+      shared('players:$code', () => players(code).snapshots());
+  static Stream<DocumentSnapshot<Map<String, dynamic>>> watchPlayer(String code, String uid) =>
+      shared('player:$code/$uid', () => players(code).doc(uid).snapshots());
 
   static Future<String?> actualParty(String uid) async {
     final d = await _db.collection('Users').doc(uid).get();

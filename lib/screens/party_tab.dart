@@ -61,7 +61,7 @@ class _PartyTabState extends State<PartyTab> {
     final c = [color, lighten(color, 0.4)];
 
     return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-      stream: PartyService.players(_party!).doc(uid).snapshots(),
+      stream: PartyService.watchPlayer(_party!, uid),
       builder: (context, snap) {
         if (snap.connectionState == ConnectionState.waiting && snap.data == null) {
           return const Padding(padding: EdgeInsets.all(40), child: Center(child: CircularProgressIndicator()));
@@ -76,7 +76,7 @@ class _PartyTabState extends State<PartyTab> {
               Text(_party!, style: TextStyle(fontSize: 26, fontWeight: FontWeight.w800, color: color)),
               const SizedBox(height: 10),
               StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-                stream: PartyService.players(_party!).snapshots(),
+                stream: PartyService.watchPlayers(_party!),
                 builder: (context, ps) {
                   final docs = ps.data?.docs ?? [];
                   return Wrap(spacing: 6, runSpacing: 6, children: [

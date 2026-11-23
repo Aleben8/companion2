@@ -333,8 +333,8 @@ class _InventoryTabState extends State<InventoryTab> {
 
   @override
   Widget build(BuildContext context) {
-    return StreamBuilder<Map<String, dynamic>?>(
-      stream: ItemService.watchUser(_uid),
+    return StreamBuilder<Map<String, dynamic>>(
+      stream: ItemService.watchUserFields(_uid, const ['inventory', 'coins']),
       builder: (context, snap) {
         if (!snap.hasData && snap.connectionState == ConnectionState.waiting) {
           return const Padding(padding: EdgeInsets.all(40), child: Center(child: CircularProgressIndicator()));

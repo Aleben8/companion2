@@ -49,9 +49,14 @@ Entrambe le modalità usano lo stesso progetto Firebase (`lib/firebase_options.d
 - **Turni.** All'avvio l'ordine è casuale. Ogni turno dà **2 azioni con un numero DISPARI di giocatori, 3 con un numero PARI**
   (`kActionsOdd`/`kActionsEven` in `lib/mode.dart`). Chi gioca usa "Ho usato un'azione" per le azioni fatte al tavolo e
   "Fine turno" per passare. Quando tutti hanno giocato il **giro** avanza. La barra in alto mostra giro, chi gioca e le azioni rimaste.
-- **Posizione.** Dopo aver mosso la pedina sul tabellone, il giocatore tocca zona e settore nella tab **Tavolo**. Ogni spostamento
-  costa 1 azione (`kMoveActionCost`). Le posizioni sono private: le altre si scoprono con il Radar.
-  Zone e numero di settori sono in `lib/table/zones.dart` (**modificali in base alla tua mappa**: ora ogni zona ha 4 settori).
+- **Posizione.** Dopo aver mosso la pedina sul tabellone, il giocatore la sposta anche sulla **mappa disegnata** della tab
+  **Tavolo**: tocca la zona, sceglie il settore nel pannello che compare sotto e conferma con un solo bottone
+  ("Vai: zona, settore N · costo"). Ogni spostamento costa 1 azione (`kMoveActionCost`). Le posizioni sono private: le altre
+  si scoprono con il Radar. Al tavolo si gioca **al massimo in 9** (`kMaxTablePlayers`).
+- **Mappa.** Zone come rettangoli arrotondati con le linee dei collegamenti; la tua zona ha l'etichetta "Tu", sopra le zone
+  raggiungibili a piedi c'è il costo in azioni, quelle non collegate sono tratteggiate ("Biglietto" o "Treno/traghetto"),
+  un'icona segna gli eventi in corso. Posizioni delle zone in `kZoneMapPos` (`lib/table/zones.dart`): è un primo disegno
+  semplice, si può sostituire con l'immagine del tabellone (sfondo dello Stack in `lib/screens/table_map.dart`).
 - **Minuti -> giri.** Repellente 2 giri, recupero dopo la sconfitta 1 giro, divieto di riaffrontarsi dopo una fuga 2 giri,
   Trappola = si salta il turno successivo (valori in `lib/items.dart`).
 - **Strumenti.** Radar mostra zona e settore degli altri, Calmanella rivela la tua zona, Trappola si piazza nel tuo settore e scatta
@@ -60,8 +65,9 @@ Entrambe le modalità usano lo stesso progetto Firebase (`lib/firebase_options.d
   2 giri, in ordine casuale. Ogni evento è **annunciato un giro prima**, poi è **in corso** per qualche giro e infine termina. La app dice
   cosa mettere sul tabellone. Effetti: Vulcano (entrata +1 azione, Fuoco +1 danno, chi è lì perde 1 azione), Canyon (2 settori bloccati),
   Giungla (nebbia: invisibili al Radar), Regione innevata (entrata +1 azione), Isola (2 settori sommersi), Colline (Elettro +2, Volante +1),
-  Hub e Campi (una volta sola si prende uno strumento a caso). **Il leggendario** compare in una zona a caso con un Pokémon più forte
-  dei capi: il primo che lo batte vince 2 strumenti.
+  Hub e Campi (una volta sola si prende uno strumento a caso). **Il leggendario** compare in un **settore impervio** di una zona
+  in gioco (che ne abbia uno) con un Pokémon più forte dei capi: per sfidarlo bisogna essere in quel settore; il primo che lo
+  batte vince 2 strumenti.
 - **Battaglie.** Funzionano come prima (codice da condividere). Gli eventi attivi nella zona di chi crea la battaglia danno il bonus di danno.
 - Le palestre GPS di Varese esistono solo nella modalità dal vivo.
 
@@ -73,11 +79,54 @@ Nel riquadro Master della tab Tavolo c'è l'interruttore **Eventi di zona manual
 
 ### Collegamenti tra zone e viaggi speciali
 
-Non tutte le zone confinano: ci si sposta (di settore o di zona) solo tra zone **collegate**. Il Master decide i collegamenti dal riquadro Master della tab Tavolo, bottone **Collegamenti tra zone** (spunta le coppie; "Proposta" ripristina la bozza letta dalla mappa, `kDefaultLinks` in `lib/table/zones.dart`). Le scelte restano salvate nel party e valgono dalla partita successiva e, se la partita è in corso, subito. Ogni scheda zona mostra a cosa è collegata.
+Non tutte le zone confinano: a piedi ci si sposta (di settore o di zona) solo tra zone **collegate**, scegliendo liberamente il settore di arrivo. Il Master decide i collegamenti dal riquadro Master della tab Tavolo, bottone **Collegamenti tra zone** (spunta le coppie; "Proposta" ripristina la bozza letta dalla mappa, `kDefaultLinks` in `lib/table/zones.dart`). Le scelte restano salvate nel party e valgono dalla partita successiva e, se la partita è in corso, subito. La mappa disegna i collegamenti.
 
-Per andare in una zona **non collegata**:
-- **Biglietto** (nuovo strumento, solo tavolo): la app lo propone nello spostamento; il costo in azioni è quello normale.
-- **Eventi di passaggio**: *Treno straordinario* (Hub) e *Traghetto dei relitti* (Isola). Finché sono attivi, chi è in quella zona raggiunge qualsiasi zona senza Biglietto. Si aggiungono a mano come tutti gli altri eventi, o escono nel sorteggio automatico.
+Per andare in una zona **non collegata** (es. Neve → Canyon) non si va a piedi:
+- **Biglietto** (strumento solo tavolo) o **eventi di passaggio**: *Treno straordinario* (Hub) e *Traghetto dei relitti* (Isola); finché sono attivi, chi è in quella zona raggiunge qualsiasi zona senza Biglietto.
+- In tutti e tre i casi si parte **solo da un settore di passaggio** e si arriva **nel settore di passaggio** della zona di destinazione (il settore non si sceglie). Il costo in azioni è quello normale.
+
+### Biomi in gioco
+
+A **Nuova partita** il Master vede i biomi estratti: l'Hub c'è sempre, poi **giocatori + 1** biomi a caso tra gli altri 7 (al massimo tutti). Può cambiarli con le spunte (o "Riestrai") prima di avviare. Se con i collegamenti l'Hub non raggiunge a piedi uno dei biomi scelti, la app lo avvisa (si può avviare lo stesso). La scelta sta in `state.biomes`: mappa, collegamenti, Biglietto, eventi (anche il leggendario), indizi ed emporio usano solo i biomi in gioco. Dal vivo i biomi non ci sono.
+
+### Settori e loro tipo
+
+Ogni settore ha un tipo (`SectorType` in `lib/table/zones.dart`, regole e costanti in `lib/table/sectors.dart`). Il Master cambia tipo e numero dei settori dal riquadro Master, bottone **Settori delle zone** ("Proposta" torna alla disposizione di partenza); si salva in `Party/{codice}.sectorTypes` e viene copiato in `state.sectors` all'avvio. Se a partita in corso una zona perde settori, giocatori, tracce, indizi nascosti, trappole, allarmi e settori bloccati che stavano nei settori spariti finiscono nell'ultimo rimasto.
+
+Distribuzione di partenza (30 settori):
+
+| Zona | Settori | Cittadino | Rifugio | Passaggio | Selvaggio | Impervio |
+|---|---|---|---|---|---|---|
+| Hub | 5 | 3 | 1 | 1 | 0 | 0 |
+| Giungla | 4 | 1 | 1 | 1 | 1 | 0 |
+| Canyon | 4 | 1 | 1 | 1 | 0 | 1 |
+| Regione innevata | 4 | 1 | 1 | 1 | 0 | 1 |
+| Vulcano | 4 | 1 | 1 | 1 | 0 | 1 |
+| Campi | 3 | 1 | 1 | 1 | 0 | 0 |
+| Colline | 3 | 1 | 1 | 1 | 0 | 0 |
+| Isola dei relitti | 3 | 1 | 1 | 1 | 0 | 0 |
+
+| Tipo | Effetti |
+|---|---|
+| **Cittadino** | Qui c'è l'emporio (l'Emporio si apre solo in un settore cittadino). Nessun incontro selvatico. Locali: CD −2. Tracce: forza −1 (minimo 1). |
+| **Selvaggio** | Entrando, 25% di incontrare un Pokémon selvatico del tipo della zona (forza simile alla tua, NPC come nelle palestre). Si sceglie: affrontarlo (vittoria: `kCoinsWild` monete e 25% di uno strumento) o fuggire (1 azione; se non ne hai, la perdi al turno dopo). Finché non scegli non puoi muoverti né cercare. |
+| **Impervio** | Entrare nel settore costa +1 azione. Tracce: forza +1. *Cerca* trova uno strumento al 30% invece del 15%. Qui compare il leggendario. Locali: CD +2. |
+| **Rifugio** | A inizio turno chi è qui recupera 5 PS. Nessuno può sfidarlo a battaglia (né lui può combattere contro altri giocatori da qui); il Radar lo vede comunque. Locali: CD −1. |
+| **Passaggio** | Da qui partono e qui arrivano Biglietto, treno e traghetto. Tracce: forza +1. |
+
+### Tracce e informazioni dai locali
+
+- **Forza delle tracce.** Ogni spostamento e ogni ricerca lascia una traccia di forza 1–3: base 1, **+1 con la spunta "Lascia una traccia ben visibile"** (nel pannello di spostamento), più il modificatore del settore. La Lente vede una traccia per *forza × 2* giri e ne dice la forza (debole, chiara, evidente). Costanti in `lib/table/sectors.dart`.
+- **Informazioni dai locali** (riquadro Master, a partita in corso, in **qualsiasi** settore). Il Master sceglie il giocatore che chiede e tira d20 (o scrive il tiro fatto al tavolo) contro la **CD 12** modificata dal tipo di settore (cittadino −2, rifugio −1, selvaggio 0, impervio +2, passaggio 0). Se riesce, i locali raccontano chi è passato nella zona negli ultimi 3 giri (con la forza della traccia), gli eventi in arrivo nella zona e se qualcuno ha nascosto indizi lì. Codice: `TableService.localsReport`.
+
+### Proposta per il futuro (non fatta): una mappa con più settori
+
+Oggi le zone hanno 3–5 settori e la mappa è un disegno semplice. Per le versioni successive:
+1. **Settori come caselle sulla mappa.** Ogni settore diventa una casella con le sue coordinate (`kSectorMapPos`), e i collegamenti si definiscono anche *tra settori* (non solo tra zone): ci si sposta da un settore a uno adiacente, anche di un'altra zona, se confinano.
+2. **Più settori per zona** (es. 6–9), con un costo di movimento per casella invece che per zona, così le distanze contano davvero.
+3. **Immagine del tabellone** come sfondo, con le caselle sovrapposte e un editor del Master per trascinarle al punto giusto.
+4. I tipi di settore restano gli stessi: aumentando i settori si possono aggiungere più selvaggi e impervi senza togliere città e rifugi.
+5. Dati: `sectorTypes` diventa una lista di oggetti `{type, x, y, links[]}`; serve una migrazione che converta le partite in corso.
 
 Tutti gli eventi di zona ora durano 2 giri.
 
@@ -173,7 +222,8 @@ lib/
   mode.dart                       modalità (tavolo/live), regole del tavolo e del live
   services/mode_service.dart      segue la modalità scelta dal Master per il party
   services/live_service.dart      zone GPS, settori, attese del live
-  table/                          zone, eventi di zona, tabella dei tipi
+  table/                          zone, settori e loro tipi (sectors.dart), eventi di zona, tabella dei tipi
+  screens/table_map.dart          mappa disegnata del Tavolo e pannello dei settori
   services/table_service.dart     turni, spostamenti, eventi, leggendario
   services/clue_service.dart      indizi: piazzamento, ricerca, dichiarazione
   widgets/clues_card.dart         scheda "Indizi sulla mappa" (tab Party)

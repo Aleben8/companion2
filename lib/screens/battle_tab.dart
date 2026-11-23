@@ -212,8 +212,8 @@ class _BattleTabState extends State<BattleTab> {
   /// Strumenti da dichiarare prima del primo turno (Caramella, Amuleto, Guanto).
   Widget _prefight(String id, String key, Map? mine) {
     const items = {ItemId.caramella: 'candy', ItemId.amuleto: 'amulet', ItemId.guanto: 'glove'};
-    return StreamBuilder<Map<String, dynamic>?>(
-      stream: ItemService.watchUser(_s.userName!),
+    return StreamBuilder<Map<String, dynamic>>(
+      stream: ItemService.watchUserFields(_s.userName!, const ['inventory']),
       builder: (context, snap) {
         final inv = ItemService.readInventory(snap.data);
         final children = <Widget>[];
@@ -349,8 +349,8 @@ class _BattleTabState extends State<BattleTab> {
         if (over)
           _ResultCard(data: d, me: me, onNew: _leave)
         else
-          StreamBuilder<Map<String, dynamic>?>(
-            stream: ItemService.watchUser(me),
+          StreamBuilder<Map<String, dynamic>>(
+            stream: ItemService.watchUserFields(me, const ['inventory']),
             builder: (context, snap) {
               final inv = ItemService.readInventory(snap.data);
               final energy = (mine['current_energies'] as num?)?.round() ?? 0;

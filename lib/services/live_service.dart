@@ -7,6 +7,7 @@ import '../mode.dart';
 import '../table/zones.dart';
 import 'item_service.dart';
 import 'party_service.dart';
+import 'shared_stream.dart';
 
 /// Una zona del gioco dal vivo: un cerchio sulla mappa posizionato dal Master.
 class LiveZone {
@@ -43,7 +44,7 @@ class LiveService {
   }
 
   static Stream<Map<String, LiveZone>> watchZones(String party) =>
-      PartyService.party(party).snapshots().map((s) => zonesOf(s.data()));
+      shared('liveZones:$party', () => PartyService.watchParty(party).map(zonesOf));
 
   static Future<Map<String, LiveZone>> zones(String party) async =>
       zonesOf((await PartyService.party(party).get()).data());
@@ -75,7 +76,7 @@ class LiveService {
       }
     }
     if (best == null) return null;
-    final n = zoneSpec(best.id).sectors;
+    const n = kLiveSectors;
     final deg = bearingDegrees(best.lat, best.lng, lat, lng);
     final sector = ((deg + 180 / n) % 360) ~/ (360 / n) + 1;
     return {'zone': best.id, 'sector': min(sector, n)};
@@ -84,7 +85,7 @@ class LiveService {
   /// "settore 2 (Est)": con 4 settori sono i punti cardinali.
   static String sectorLabel(String zoneId, dynamic sector) {
     final s = sector is num ? sector.toInt() : int.tryParse('$sector') ?? 0;
-    if (zoneSpec(zoneId).sectors != 4 || s < 1 || s > 4) return 'settore $s';
+    if (s < 1 || s > kLiveSectors) return 'settore $s';
     return 'settore $s (${const ['Nord', 'Est', 'Sud', 'Ovest'][s - 1]})';
   }
 

@@ -7,6 +7,7 @@ import '../gyms.dart';
 import '../table/events.dart';
 import 'item_service.dart';
 import 'party_service.dart';
+import 'shared_stream.dart';
 
 /// Palestre e capipalestra.
 ///
@@ -27,11 +28,10 @@ class GymService {
       PartyService.party(party).collection('gyms');
 
   static Stream<QuerySnapshot<Map<String, dynamic>>> watchGyms(String party) =>
-      gyms(party).snapshots();
+      shared('gyms:$party', () => gyms(party).snapshots());
 
-  static Stream<bool> watchStarted(String party) => PartyService.party(party)
-      .snapshots()
-      .map((s) => s.data()?['gameStarted'] == true);
+  static Stream<bool> watchStarted(String party) =>
+      shared('gameStarted:$party', () => PartyService.watchParty(party).map((d) => d?['gameStarted'] == true));
 
   // ------------------------------------------------------------- generazione
 
@@ -80,11 +80,13 @@ class GymService {
 
   /// Crea un capopalestra casuale ma coerente con il tipo.
   /// [legendary]: più forte (kLegendaryStatPoints), mosse più potenti e nessun allenatore.
-  static Future<Map<String, dynamic>> generateLeader(String type, {bool legendary = false, String? pokemon}) async {
+  /// [wild]: Pokémon selvatico (nessun allenatore); [statPoints] adatta la forza (es. a quella del giocatore).
+  static Future<Map<String, dynamic>> generateLeader(String type,
+      {bool legendary = false, bool wild = false, String? pokemon, int? statPoints}) async {
     final profile = kTypeProfiles[type] ?? kTypeProfiles['Normale']!;
     final pokemonName = pokemon ?? _pick(profile.pokemon);
-    final String? trainer = legendary ? null : _pick(profile.trainers);
-    final stats = _randomStats(profile.statWeights, legendary ? kLegendaryStatPoints : kGymStatPoints);
+    final String? trainer = legendary || wild ? null : _pick(profile.trainers);
+    final stats = _randomStats(profile.statWeights, statPoints ?? (legendary ? kLegendaryStatPoints : kGymStatPoints));
 
     // Due mosse: una leggera (Dmg 1-3) e una forte (Dmg 3-5), diverse tra loro.
     final templates = [...profile.moves]..shuffle(_rnd);

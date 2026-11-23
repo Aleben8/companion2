@@ -4,16 +4,30 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 
 import '../items.dart';
 import '../mode.dart';
+import '../constants.dart';
 import '../table/events.dart';
+import '../table/sectors.dart';
 import '../table/type_chart.dart';
 import '../table/zones.dart';
+import 'battle_service.dart';
 import 'gym_service.dart';
 import 'item_service.dart';
 import 'live_service.dart';
 import 'party_service.dart';
+import 'shared_stream.dart';
 
 /// Esito di [TableService.routeTo].
 enum MoveRoute { direct, passage, ticket }
+
+/// Esito delle informazioni dai locali (finestra del Master).
+class LocalsReport {
+  final String uid;
+  final String place;
+  final int cd, roll;
+  final bool success;
+  final List<String> lines;
+  const LocalsReport(this.uid, this.place, this.cd, this.roll, this.success, this.lines);
+}
 
 /// Partita a zone: turni, azioni, posizione per zona/settore ed eventi di zona.
 /// La stessa partita si gioca anche dal vivo (vedi [LiveService]): niente turni, il giro avanza
@@ -39,9 +53,11 @@ class TableService {
   static CollectionReference<Map<String, dynamic>> trapsCol(String party) =>
       PartyService.party(party).collection('traps');
 
+  // condivisi: un solo ascolto per party (vedi shared_stream.dart)
   static Stream<Map<String, dynamic>?> watchState(String party) =>
-      stateRef(party).snapshots().map((s) => s.data());
-  static Stream<QuerySnapshot<Map<String, dynamic>>> watchEvents(String party) => eventsCol(party).snapshots();
+      shared('state:$party', () => stateRef(party).snapshots().map((s) => s.data()));
+  static Stream<QuerySnapshot<Map<String, dynamic>>> watchEvents(String party) =>
+      shared('zoneEvents:$party', () => eventsCol(party).snapshots());
 
   static int _i(dynamic v, [int d = 0]) => v is num ? v.toInt() : d;
 
@@ -69,10 +85,23 @@ class TableService {
   /// Tavolo: ordine dei turni casuale, tutti nell'Hub. Dal vivo: parte l'orologio dei giri e
   /// la posizione arriva dal GPS (servono tutte le zone posizionate sulla mappa).
   /// In entrambi i casi gli eventi di zona vengono pianificati.
-  static Future<void> startGame(String party, {bool manualEvents = false}) async {
+  /// Al tavolo [biomes] sono le zone in gioco scelte dal Master (l'Hub c'è sempre; null = estrazione
+  /// automatica) e i settori sono quelli impostati per il party.
+  static Future<void> startGame(String party, {bool manualEvents = false, List<String>? biomes}) async {
     final live = !kTableMode;
     final players = await PartyService.players(party).get();
     if (players.docs.length < 2) throw Exception('Servono almeno 2 giocatori nel party');
+    if (!live && players.docs.length > kMaxTablePlayers) {
+      throw Exception('Al tavolo si gioca al massimo in $kMaxTablePlayers');
+    }
+    List<String>? inPlay;
+    Map<String, List<SectorType>>? sectors;
+    if (!live) {
+      inPlay = {'hub', ...(biomes ?? drawBiomes(players.docs.length))}.toList();
+      sectors = await partySectors(party);
+      TableLayout.sectors = sectors;
+      TableLayout.biomes = inPlay.toSet();
+    }
     if (live) {
       final miss = LiveService.missing(await LiveService.zones(party));
       if (miss.isNotEmpty) {
@@ -109,6 +138,8 @@ class TableService {
       'roundMinutes': minutes,
       'roundStartedAt': Timestamp.now(),
       'startedAt': FieldValue.serverTimestamp(),
+      if (inPlay != null) 'biomes': inPlay,
+      if (sectors != null) 'sectors': TableLayout.encode(sectors),
     });
     for (final uid in order) {
       batch.set(
@@ -118,6 +149,8 @@ class TableService {
           'pos': live ? FieldValue.delete() : {'zone': 'hub', 'sector': 1},
           'busyUntil': FieldValue.delete(),
           'searchReadyAt': FieldValue.delete(),
+          'wildEncounter': FieldValue.delete(),
+          'refugeRound': FieldValue.delete(),
           'trappedSkip': 0,
           'actionPenalty': 0,
           // effetti di partite precedenti (i giri ripartono da 1)
@@ -142,9 +175,18 @@ class TableService {
   }
 
   /// Eventi disponibili nella modalità corrente: dal vivo niente treno/traghetto
-  /// (ci si sposta a piedi, i collegamenti tra zone non ci sono).
+  /// (ci si sposta a piedi, i collegamenti tra zone non ci sono); al tavolo solo nei biomi in gioco.
   static List<ZoneEventDef> get availableEvents =>
-      [for (final d in kZoneEventDefs) if (kTableMode || !d.passage) d];
+      [for (final d in kZoneEventDefs) if ((kTableMode || !d.passage) && TableLayout.inPlay(d.zone)) d];
+
+  /// Zone dove può comparire il leggendario: biomi in gioco (non l'Hub) con un settore impervio;
+  /// se nessuno ne ha, uno qualsiasi dei biomi in gioco.
+  static List<String> legendaryZones() {
+    final biomes = [for (final z in TableLayout.zonesInPlay) if (z.id != 'hub') z.id];
+    final rough = [for (final z in biomes) if (TableLayout.firstOf(z, SectorType.impervio) != null) z];
+    if (!kTableMode) return biomes;
+    return rough.isNotEmpty ? rough : (biomes.isNotEmpty ? biomes : [for (final z in kZones) if (z.id != 'hub') z.id]);
+  }
 
   /// Sceglie a caso gli eventi e i giri in cui partono.
   static List<Map<String, dynamic>> _schedule({int base = 1}) {
@@ -153,10 +195,11 @@ class TableService {
     final defs = [...chosen, kLegendaryDef];
     final starts = [for (var i = 0; i < defs.length; i++) kFirstEventRound - 1 + base + i * kEventGap]..shuffle(_rnd);
     final out = <Map<String, dynamic>>[];
+    final legendaryIn = legendaryZones();
     for (var i = 0; i < defs.length; i++) {
       final d = defs[i];
       final start = starts[i];
-      final zone = d.legendary ? (kZones.where((z) => z.id != 'hub').toList()..shuffle(_rnd)).first.id : d.zone;
+      final zone = d.legendary ? legendaryIn[_rnd.nextInt(legendaryIn.length)] : d.zone;
       out.add({
         'defId': d.id,
         'zone': zone,
@@ -172,6 +215,111 @@ class TableService {
       });
     }
     return out;
+  }
+
+  // ------------------------------------------------------- biomi in gioco
+
+  /// Estrazione dei biomi: l'Hub c'è sempre, poi giocatori + 1 biomi a caso tra gli altri 7.
+  static List<String> drawBiomes(int players) {
+    final others = [for (final z in kZones) if (z.id != 'hub') z.id]..shuffle(_rnd);
+    return ['hub', ...others.take(min(others.length, players + 1))];
+  }
+
+  /// Biomi della partita dallo stato (null = tutte le zone, es. partite avviate prima dei biomi).
+  static Set<String>? biomesOf(Map<String, dynamic>? state) {
+    final raw = state?['biomes'];
+    return raw is List ? {'hub', ...raw.map((e) => '$e')} : null;
+  }
+
+  /// Biomi che l'Hub NON riesce a raggiungere a piedi con i collegamenti (solo tra biomi in gioco).
+  static List<String> unreachableBiomes(Set<String> biomes, Set<String> links) {
+    final seen = <String>{'hub'};
+    final todo = ['hub'];
+    while (todo.isNotEmpty) {
+      final z = todo.removeLast();
+      for (final o in biomes) {
+        if (!seen.contains(o) && links.contains(linkKey(z, o))) {
+          seen.add(o);
+          todo.add(o);
+        }
+      }
+    }
+    return [for (final b in biomes) if (!seen.contains(b)) b];
+  }
+
+  // ------------------------------------------------------------- settori
+
+  /// Settori scelti dal Master per il party (se non li ha cambiati, la proposta di [kDefaultSectors]).
+  static Future<Map<String, List<SectorType>>> partySectors(String party) async =>
+      TableLayout.parse((await PartyService.party(party).get()).data()?['sectorTypes']);
+
+  /// Settori in uso: quelli della partita se è avviata, altrimenti quelli del party.
+  static Map<String, List<SectorType>> sectorsOf(Map<String, dynamic>? state, Map<String, dynamic>? partyDoc) =>
+      state?['started'] == true && state?['sectors'] is Map
+          ? TableLayout.parse(state!['sectors'])
+          : TableLayout.parse(partyDoc?['sectorTypes']);
+
+  /// Ricarica settori e biomi della partita (per i servizi che non passano dall'interfaccia).
+  static Future<Map<String, dynamic>?> loadLayout(String party) async {
+    final st = (await stateRef(party).get()).data();
+    final p = (await PartyService.party(party).get()).data();
+    TableLayout.sectors = sectorsOf(st, p);
+    TableLayout.biomes = st?['started'] == true ? biomesOf(st) : null;
+    return st;
+  }
+
+  /// Il Master salva tipo e numero dei settori: valgono dalla prossima partita e, se è in corso, subito.
+  /// Se una zona ha meno settori di prima, posizioni, tracce, indizi nascosti, trappole e allarmi
+  /// che stavano nei settori spariti finiscono nell'ultimo settore rimasto.
+  static Future<void> setSectorTypes(String party, Map<String, List<SectorType>> sectors) async {
+    final enc = TableLayout.encode(sectors);
+    await PartyService.party(party).set({'sectorTypes': enc}, SetOptions(merge: true));
+    final st = (await stateRef(party).get()).data();
+    final before = sectorsOf(st, null);
+    if (st == null || st['started'] != true) return;
+    await stateRef(party).update({'sectors': enc});
+    TableLayout.sectors = sectors;
+    final shrunk = <String, int>{
+      for (final e in sectors.entries)
+        if ((before[e.key]?.length ?? 0) > e.value.length) e.key: e.value.length,
+    };
+    if (shrunk.isEmpty) return;
+    final batch = _db.batch();
+    // sottocollezioni con { zone, sector } (indizi: { place: { zone, sector } })
+    for (final name in ['traces', 'traps', 'alarms']) {
+      for (final d in (await PartyService.party(party).collection(name).get()).docs) {
+        final z = d.data()['zone'], s = _i(d.data()['sector']);
+        final max = shrunk[z];
+        if (max != null && s > max) batch.update(d.reference, {'sector': max});
+        final fz = d.data()['fromZone'], fs = _i(d.data()['fromSector']);
+        final fmax = shrunk[fz];
+        if (fmax != null && fs > fmax) batch.update(d.reference, {'fromSector': fmax});
+      }
+    }
+    for (final d in (await PartyService.party(party).collection('clues').get()).docs) {
+      final pl = d.data()['place'];
+      if (pl is! Map) continue;
+      final max = shrunk[pl['zone']];
+      if (max != null && _i(pl['sector']) > max) batch.update(d.reference, {'place.sector': max});
+    }
+    for (final p in (await PartyService.players(party).get()).docs) {
+      final u = (await ItemService.userRef(p.id).get()).data();
+      final pos = u?['pos'];
+      final max = pos is Map ? shrunk[pos['zone']] : null;
+      if (max != null && _i(pos['sector']) > max) batch.update(ItemService.userRef(p.id), {'pos.sector': max});
+    }
+    // settori bloccati dagli eventi in corso
+    for (final d in (await eventsCol(party).get()).docs) {
+      final e = d.data();
+      final max = shrunk[e['zone']];
+      if (max == null) continue;
+      final blocked = [for (final b in (e['blocked'] as List? ?? [])) if (_i(b) <= max) _i(b)];
+      batch.update(d.reference, {
+        'blocked': blocked,
+        if (e['sector'] != null && _i(e['sector']) > max) 'sector': max,
+      });
+    }
+    await batch.commit();
   }
 
   // ------------------------------------------------- collegamenti tra zone
@@ -320,8 +468,9 @@ class TableService {
     await ref.set(update, SetOptions(merge: true));
   }
 
-  /// Come si va da [from] a [to]: stessa zona, collegamento diretto, passaggio di un evento
-  /// (treno/traghetto) o solo con un Biglietto.
+  /// Come si va da [from] a [to]: stessa zona o collegamento diretto (a piedi, settore di arrivo libero),
+  /// passaggio di un evento (treno/traghetto) o solo con un Biglietto. Treno, traghetto e Biglietto
+  /// partono solo da un settore di passaggio e arrivano nel settore di passaggio della zona (vedi [moveTo]).
   static MoveRoute routeTo(Map<String, dynamic>? state, List<Map<String, dynamic>> events, String? from, String to) {
     if (from == null || from == to) return MoveRoute.direct;
     if (linksOf(state).contains(linkKey(from, to))) return MoveRoute.direct;
@@ -440,6 +589,7 @@ class TableService {
     final ref = stateRef(party);
     var roundAdvanced = false;
     var newRound = 0;
+    String? next;
     await _db.runTransaction<void>((tx) async {
       final s = (await tx.get(ref)).data();
       _checkTurn(s, uid);
@@ -477,11 +627,39 @@ class TableService {
       }
       tx.update(ref, {'idx': idx, 'round': round, 'actionsLeft': left});
       newRound = round;
+      next = order[idx];
     });
     if (roundAdvanced) {
       TableClock.round = newRound;
       await advanceEvents(party, newRound);
     }
+    if (next != null) await _refugeRest(party, next!);
+  }
+
+  /// Rifugio: a inizio turno chi si trova in un settore rifugio recupera [kRefugeHp] PS (una volta per turno).
+  static Future<void> _refugeRest(String party, String uid) async {
+    final uref = ItemService.userRef(uid);
+    final u = (await uref.get()).data();
+    final pos = u?['pos'] as Map?;
+    if (pos == null) return;
+    await loadLayout(party);
+    if (TableLayout.typeOf('${pos['zone']}', _i(pos['sector'])) != SectorType.rifugio) return;
+    if (ItemService.isActive(u?['koUntil'])) return; // esausto: serve il recupero o un Revitalizzante
+    final pk = await activePokemon(uid, u);
+    if (pk == null) return;
+    final pref = uref.collection('Pokemon').doc(pk);
+    final hp = BattleService.currentHp((await pref.get()).data());
+    if (hp >= kBaseHp) return;
+    await pref.set({'currentHp': min(kBaseHp, hp + kRefugeHp)}, SetOptions(merge: true));
+  }
+
+  /// Pokémon con cui il giocatore è entrato (salvato al login); altrimenti il primo che ha.
+  static Future<String?> activePokemon(String uid, [Map<String, dynamic>? user]) async {
+    final u = user ?? (await ItemService.userRef(uid).get()).data();
+    final a = u?['activePokemon'];
+    if (a is String && a.isNotEmpty) return a;
+    final q = await ItemService.userRef(uid).collection('Pokemon').limit(1).get();
+    return q.docs.isEmpty ? null : q.docs.first.id;
   }
 
   // ------------------------------------------------------------ spostamenti
@@ -491,16 +669,21 @@ class TableService {
     return [for (final d in q.docs) {...d.data(), 'id': d.id}];
   }
 
-  /// Costo (in azioni) di uno spostamento verso [zone], dati gli eventi attivi.
-  static int moveCost(List<Map<String, dynamic>> events, String? fromZone, String zone, {String? shield}) {
+  /// Costo (in azioni) di uno spostamento verso [zone] (e, al tavolo, verso il settore [sector]):
+  /// +1 per gli eventi che rendono difficile entrare nella zona e +1 se il settore è impervio.
+  static int moveCost(List<Map<String, dynamic>> events, String? fromZone, String zone, {String? shield, int? sector}) {
     var cost = kMoveActionCost;
     if (fromZone != zone && shield != zone) {
       for (final e in events) {
         if (e['zone'] == zone && e['status'] == 'active') cost += eventDef(e['defId'] as String).moveExtra;
       }
     }
+    if (sector != null && TableLayout.typeOf(zone, sector) == SectorType.impervio) cost += kImperviousExtraCost;
     return cost;
   }
+
+  /// Dove arrivano Biglietto, treno e traghetto: il settore di passaggio della zona.
+  static int? arrivalSector(String zone) => TableLayout.firstOf(zone, SectorType.passaggio);
 
   static Set<int> blockedSectors(List<Map<String, dynamic>> events, String zone, {String? shield}) => shield == zone
       ? <int>{}
@@ -510,27 +693,46 @@ class TableService {
             for (final b in (e['blocked'] as List? ?? [])) _i(b),
       };
 
-  /// Sposta la pedina. Restituisce un messaggio se succede qualcosa (es. trappola).
+  /// Sposta la pedina. Restituisce un messaggio se succede qualcosa (trappola, incontro selvatico).
+  ///  - Tra zone collegate (o nella stessa zona) si va a piedi e si sceglie il settore.
+  ///  - Con Biglietto, treno o traghetto si parte da un settore di passaggio e si arriva nel settore di
+  ///    passaggio della zona: [sector] viene ignorato.
+  ///  - [visibleTrace]: "Lascia una traccia ben visibile" (forza +1).
   static Future<String?> moveTo({
     required String party,
     required String uid,
     required String zone,
     required int sector,
     bool useTicket = false,
+    bool visibleTrace = false,
   }) async {
     final spec = zoneSpec(zone);
-    if (sector < 1 || sector > spec.sectors) throw Exception('Settore non valido');
+    final st = await loadLayout(party);
+    if (!TableLayout.inPlay(zone)) throw Exception('${spec.name} non è in gioco in questa partita');
     final events = await activeEvents(party);
     final me = (await ItemService.userRef(uid).get()).data();
+    if (me?['wildEncounter'] is Map) throw Exception('Prima affronta o sfuggi al Pokémon selvatico');
     final shield = ItemService.shieldZone(me);
+    final cur = me?['pos'] as Map?;
+    final from = cur?['zone'] as String?;
+    final route = routeTo(st, events, from, zone);
+    final travel = route != MoveRoute.direct; // Biglietto, treno o traghetto
+    if (travel) {
+      if (from != null && TableLayout.typeOf(from, _i(cur?['sector'])) != SectorType.passaggio) {
+        throw Exception('Per ${route == MoveRoute.ticket ? 'usare il Biglietto' : 'salire su treno o traghetto'} '
+            'devi partire dal settore di passaggio della tua zona');
+      }
+      final arrival = arrivalSector(zone);
+      if (arrival == null) throw Exception('${spec.name} non ha un settore di passaggio dove arrivare');
+      sector = arrival;
+    }
+    if (sector < 1 || sector > spec.sectors) throw Exception('Settore non valido');
     if (blockedSectors(events, zone, shield: shield).contains(sector)) {
       throw Exception('Il settore $sector di ${spec.name} è bloccato');
     }
-    final cur = me?['pos'] as Map?;
     if (cur?['zone'] == zone && _i(cur?['sector']) == sector) throw Exception('Sei già in questo settore');
-    final cost = moveCost(events, cur?['zone'] as String?, zone, shield: shield);
+    final cost = moveCost(events, from, zone, shield: shield, sector: sector);
     var needTicket = false;
-    final route = routeTo((await stateRef(party).get()).data(), events, cur?['zone'] as String?, zone);
     if (route == MoveRoute.ticket) {
       if (!useTicket) throw Exception('${spec.name} non è collegata alla tua zona: serve un Biglietto');
       if ((ItemService.readInventory(me)['biglietto'] ?? 0) <= 0) throw Exception('Non hai Biglietti');
@@ -538,19 +740,135 @@ class TableService {
     }
     await _spend(party, uid, cost, setPos: {'zone': zone, 'sector': sector});
     if (needTicket) await ItemService.consume(uid, ItemId.biglietto);
-    if (ItemService.isActive(me?['stealthUntil'])) return null; // Passo felpato: niente tracce, trappole o allarmi
-    await ItemService.addTrace(party, uid, {
-      'kind': 'move',
-      'fromZone': cur?['zone'],
-      'fromSector': cur?['sector'],
-      'zone': zone,
-      'sector': sector,
-    });
-    await _checkAlarms(party, uid, zone, sector);
-    if (await _checkTrap(party, uid, zone, sector)) {
-      return 'Sei finito in una Trappola! Salterai il prossimo turno, a meno di usare una Fune di fuga.';
+    final type = TableLayout.typeOf(zone, sector);
+    if (!ItemService.isActive(me?['stealthUntil'])) {
+      // Passo felpato: niente tracce, trappole o allarmi
+      await ItemService.addTrace(party, uid, {
+        'kind': 'move',
+        'fromZone': cur?['zone'],
+        'fromSector': cur?['sector'],
+        'zone': zone,
+        'sector': sector,
+        'strength': traceStrength(type, visible: visibleTrace),
+      });
+      await _checkAlarms(party, uid, zone, sector);
+      if (await _checkTrap(party, uid, zone, sector)) {
+        return 'Sei finito in una Trappola! Salterai il prossimo turno, a meno di usare una Fune di fuga.';
+      }
+    }
+    if (type == SectorType.selvaggio && _rnd.nextDouble() < kWildEncounterChance) {
+      final name = await _startWildEncounter(uid, zone, sector);
+      return 'Un $name selvatico ti sbarra la strada! Affrontalo o fuggi (costa $kWildFleeCost azione).';
     }
     return null;
+  }
+
+  // ------------------------------------------------- informazioni dai locali
+
+  /// CD per avere informazioni dai locali nel settore del giocatore.
+  static int localsCd(SectorType? type) => kLocalsBaseCd + (type?.localsCdModifier ?? 0);
+
+  /// Il Master chiede ai locali per conto di un giocatore (in qualsiasi settore).
+  /// Tiro d20 (o [roll] se il Master lo tira al tavolo) contro la CD del settore: se riesce,
+  /// i locali raccontano chi è passato nella zona di recente, gli eventi in arrivo e se ci sono indizi.
+  static Future<LocalsReport> localsReport(String party, String uid, {int? roll}) async {
+    await loadLayout(party);
+    final pos = (await ItemService.userRef(uid).get()).data()?['pos'] as Map?;
+    if (pos == null) throw Exception('$uid non è ancora sulla mappa');
+    final zone = '${pos['zone']}';
+    final type = TableLayout.typeOf(zone, _i(pos['sector']));
+    final cd = localsCd(type);
+    final r = roll ?? _rnd.nextInt(20) + 1;
+    final place = '${zoneSpec(zone).name}, settore ${pos['sector']}${type == null ? '' : ' (${type.label.toLowerCase()})'}';
+    if (r < cd) return LocalsReport(uid, place, cd, r, false, const []);
+    final lines = <String>[];
+    final round = TableClock.round;
+    final traces = (await PartyService.party(party).collection('traces').get()).docs.map((d) => d.data()).where((t) =>
+        t['uid'] != uid && t['zone'] == zone && _i(t['round']) >= round - kLocalsRounds);
+    for (final t in traces) {
+      final s = _i(t['strength'], kTraceBaseStrength);
+      lines.add('${t['uid']} è ${t['kind'] == 'search' ? 'stato visto cercare' : 'passato'} nel settore ${t['sector']} '
+          '(giro ${t['round']}, traccia ${traceStrengthLabel(s)})');
+    }
+    if (traces.isEmpty) lines.add('Negli ultimi $kLocalsRounds giri non è passato nessuno da queste parti');
+    for (final d in (await eventsCol(party).get()).docs) {
+      final e = d.data();
+      if (e['zone'] != zone || (e['status'] != 'announced' && e['status'] != 'scheduled')) continue;
+      final start = _i(e['startRound']);
+      if (start >= kManualStart || start - round > kWeatherLookahead + 1) continue;
+      lines.add('Si dice che presto ci sarà: ${e['name']}');
+    }
+    final clues = (await PartyService.party(party).collection('clues').where('status', isEqualTo: 'hidden').get())
+        .docs
+        .where((d) => d.data()['ownerUid'] != uid && (d.data()['place'] as Map?)?['zone'] == zone)
+        .length;
+    lines.add(clues == 0 ? 'Nessuno ha visto nascondere qualcosa in zona' : 'Qualcuno ha nascosto qualcosa in zona ($clues)');
+    return LocalsReport(uid, place, cd, r, true, lines);
+  }
+
+  // ------------------------------------------------------------- rifugi
+
+  /// Nessuno può sfidare chi è in un settore rifugio (solo tavolo; i capipalestra e i selvatici sì).
+  static Future<void> assertNotInRefuge(String uid, {bool me = true}) async {
+    if (!kTableMode) return;
+    final party = await PartyService.actualParty(uid);
+    if (party == null) return;
+    await loadLayout(party);
+    final pos = (await ItemService.userRef(uid).get()).data()?['pos'] as Map?;
+    if (pos == null) return;
+    if (TableLayout.typeOf('${pos['zone']}', _i(pos['sector'])) == SectorType.rifugio) {
+      throw Exception(me ? 'Sei in un rifugio: qui non si combatte tra giocatori' : '$uid è in un rifugio: non può essere sfidato');
+    }
+  }
+
+  // ------------------------------------------------------- incontri selvatici
+
+  /// Genera il Pokémon selvatico (tipo della zona, forza simile alla tua) e lo mette in attesa
+  /// su `Users/{uid}.wildEncounter` finché il giocatore non sceglie se affrontarlo o fuggire.
+  static Future<String> _startWildEncounter(String uid, String zone, int sector) async {
+    final spec = zoneSpec(zone);
+    final pk = await activePokemon(uid);
+    final mine = pk == null ? null : (await ItemService.userRef(uid).collection('Pokemon').doc(pk).get()).data();
+    final myPoints = [for (final s in ['Atk', 'AtkSpec', 'Def', 'DefSpec', 'Vel']) _i(mine?[s])].fold<int>(0, (a, b) => a + b);
+    final points = max(kStatPointsTotal ~/ 2, (myPoints == 0 ? kStatPointsTotal : myPoints) - kWildStatMalus);
+    final leader = await GymService.generateLeader(spec.type, wild: true, statPoints: points);
+    await ItemService.userRef(uid).set({
+      'wildEncounter': {'zone': zone, 'sector': sector, 'type': spec.type, 'name': leader['pokemon'], 'leader': leader},
+    }, SetOptions(merge: true));
+    return '${leader['pokemon']}';
+  }
+
+  /// Fuga dall'incontro selvatico: costa [kWildFleeCost] azione (se non ne hai, la perdi al prossimo turno).
+  static Future<void> fleeWild(String party, String uid) async {
+    final uref = ItemService.userRef(uid);
+    final u = (await uref.get()).data();
+    if (u?['wildEncounter'] is! Map) throw Exception('Non c’è nessun Pokémon selvatico');
+    final st = (await stateRef(party).get()).data();
+    final mine = st?['order'] is List && List<String>.from(st!['order'] as List)[_i(st['idx'])] == uid;
+    if (mine && _i(st['actionsLeft']) >= kWildFleeCost) {
+      await _spend(party, uid, kWildFleeCost);
+      await uref.set({'wildEncounter': FieldValue.delete()}, SetOptions(merge: true));
+    } else {
+      await uref.set({'wildEncounter': FieldValue.delete(), 'actionPenalty': FieldValue.increment(kWildFleeCost)},
+          SetOptions(merge: true));
+    }
+  }
+
+  /// Affronta il Pokémon selvatico: battaglia contro un NPC, come con i capipalestra.
+  static Future<String> fightWild({required String party, required String uid, required String pk}) async {
+    final uref = ItemService.userRef(uid);
+    final w = (await uref.get()).data()?['wildEncounter'];
+    if (w is! Map) throw Exception('Non c’è nessun Pokémon selvatico');
+    final id = await BattleService.createGymBattle(
+      party: party,
+      gymId: 'wild-$uid',
+      gym: {'name': '${w['name']} selvatico', 'type': w['type'], 'leader': w['leader']},
+      uid: uid,
+      pk: pk,
+      extra: {'wild': true},
+    );
+    await uref.set({'wildEncounter': FieldValue.delete()}, SetOptions(merge: true));
+    return id;
   }
 
   static Future<void> _checkAlarms(String party, String uid, String zone, int sector) async {
@@ -648,6 +966,7 @@ class TableService {
     final zone = e['zone'] as String;
     final spec = zoneSpec(zone);
     final update = <String, dynamic>{'status': 'active'};
+    if (kTableMode) await loadLayout(party); // numero e tipo dei settori della partita
 
     if (def.blockSectors > 0) {
       final all = List<int>.generate(spec.sectors, (i) => i + 1)..shuffle(_rnd);
@@ -657,6 +976,15 @@ class TableService {
       final name = spec.legendaries[_rnd.nextInt(spec.legendaries.length)];
       update['leader'] = await GymService.generateLeader(spec.type, legendary: true, pokemon: name);
       update['legendaryName'] = name;
+      if (kTableMode) {
+        // compare solo in un settore impervio (se la zona non ne ha, in uno qualsiasi)
+        final rough = [
+          for (var s = 1; s <= spec.sectors; s++)
+            if (TableLayout.typeOf(zone, s) == SectorType.impervio) s,
+        ];
+        final pool = rough.isNotEmpty ? rough : [for (var s = 1; s <= spec.sectors; s++) s];
+        update['sector'] = pool[_rnd.nextInt(pool.length)];
+      }
     }
     await d.reference.update(update);
 
@@ -718,6 +1046,9 @@ class TableService {
     if (e['defeatedBy'] != null) throw Exception('Il leggendario è già stato sconfitto');
     final pos = (await ItemService.userRef(uid).get()).data()?['pos'] as Map?;
     if (pos?['zone'] != e['zone']) throw Exception('Devi essere in ${zoneSpec(e['zone'] as String).name}');
+    if (kTableMode && e['sector'] != null && _i(pos?['sector']) != _i(e['sector'])) {
+      throw Exception('Il leggendario è nel settore ${e['sector']}: raggiungilo');
+    }
     final spec = zoneSpec(e['zone'] as String);
     return createBattle(
       {'name': e['legendaryName'] ?? 'Leggendario', 'type': spec.type, 'leader': e['leader']},

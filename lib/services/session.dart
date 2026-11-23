@@ -46,6 +46,7 @@ class Session extends ChangeNotifier {
       userName = user;
       pokemonId = pokemonName;
       await ItemService.ensureInventory(user);
+      await _saveActive();
       await reload();
       return true;
     } catch (_) {
@@ -61,8 +62,12 @@ class Session extends ChangeNotifier {
     userName = user;
     pokemonId = pokemonName;
     await ItemService.ensureInventory(user);
+    await _saveActive();
     await reload();
   }
+
+  /// Il Pokémon con cui si gioca (serve al rifugio e agli incontri selvatici del tavolo).
+  Future<void> _saveActive() => userRef.set({'activePokemon': pokemonId}, SetOptions(merge: true));
 
   Future<void> reload() async {
     if (!isLoggedIn) return;

@@ -6,9 +6,11 @@ import 'package:geolocator/geolocator.dart';
 import '../geo.dart';
 import '../items.dart';
 import '../mode.dart';
+import '../table/sectors.dart';
 import '../table/zones.dart';
 import 'live_service.dart';
 import 'party_service.dart';
+import 'shared_stream.dart';
 import 'table_service.dart';
 
 /// Un altro party individuato dal Radar (distanza/direzione con il GPS, [place] al tavolo).
@@ -36,8 +38,28 @@ class ItemService {
   static DocumentReference<Map<String, dynamic>> userRef(String uid) =>
       _db.collection('Users').doc(uid);
 
+  /// Condiviso: un solo ascolto per utente, anche se lo usano tanti widget.
   static Stream<Map<String, dynamic>?> watchUser(String uid) =>
-      userRef(uid).snapshots().map((s) => s.data());
+      shared('user:$uid', () => userRef(uid).snapshots().map((s) => s.data()));
+
+  /// Solo alcuni campi del documento utente: emette solo quando cambiano quelli
+  /// (es. la posizione GPS, scritta ogni ~20 s, non ricostruisce chi guarda solo i badge).
+  static Stream<Map<String, dynamic>> watchUserFields(String uid, List<String> keys) => shared(
+        'user:$uid:${keys.join(',')}',
+        () => watchUser(uid).map((u) => <String, dynamic>{for (final k in keys) k: u?[k]}).distinct(jsonEquals),
+      );
+
+  /// Party corrente del giocatore (emette solo quando cambia).
+  static Stream<String?> watchActualParty(String uid) => shared(
+        'actualParty:$uid',
+        () => watchUser(uid).map((u) {
+          final p = u?['actualParty'];
+          return p is String && p.isNotEmpty ? p : null;
+        }).distinct(),
+      );
+
+  /// Ultimo valore noto del documento utente (per `initialData` degli StreamBuilder).
+  static Map<String, dynamic>? lastUser(String uid) => sharedLast<Map<String, dynamic>?>('user:$uid');
 
   // ---------------------------------------------------------- inventario
 
@@ -340,8 +362,8 @@ class ItemService {
   static CollectionReference<Map<String, dynamic>> trades(String party) =>
       PartyService.party(party).collection('trades');
 
-  static Stream<QuerySnapshot<Map<String, dynamic>>> watchIncomingTrades(String party, String uid) =>
-      trades(party).where('to', isEqualTo: uid).where('status', isEqualTo: 'pending').snapshots();
+  static Stream<QuerySnapshot<Map<String, dynamic>>> watchIncomingTrades(String party, String uid) => shared(
+      'trades:$party/$uid', () => trades(party).where('to', isEqualTo: uid).where('status', isEqualTo: 'pending').snapshots());
 
   /// Offri uno strumento a un altro giocatore; [want] = cosa chiedi in cambio (null = regalo).
   static Future<void> offerTrade({
@@ -433,7 +455,12 @@ class ItemService {
     final moves = <String>[];
 
     if (kTableMode) {
-      final recent = docs.where((t) => ((t['round'] as num?)?.toInt() ?? 0) >= TableClock.round - kTraceRounds).toList();
+      await TableService.loadLayout(party);
+      // una traccia resta visibile per (forza × kTraceRoundsPerStrength) giri: le più evidenti durano di più
+      int strength(Map t) => (t['strength'] as num?)?.toInt() ?? kTraceBaseStrength;
+      final recent = docs
+          .where((t) => ((t['round'] as num?)?.toInt() ?? 0) >= TableClock.round - kTraceRoundsPerStrength * strength(t))
+          .toList();
       final bySector = <String, Set<int>>{};
       for (final t in recent.where((t) => t['kind'] == 'search')) {
         bySector.putIfAbsent('${t['zone']}', () => {}).add((t['sector'] as num).toInt());
@@ -447,10 +474,11 @@ class ItemService {
       for (final t in recent.where((t) => t['kind'] == 'move')) {
         final dest = '${zoneSpec('${t['zone']}').name}, settore ${t['sector']}';
         final from = '${zoneSpec('${t['fromZone']}').name}, settore ${t['fromSector']}';
+        final how = 'giro ${t['round']}, traccia ${traceStrengthLabel(strength(t))}';
         if (t['fromZone'] == me!['zone'] && t['fromSector'] == me['sector']) {
-          moves.add('${t['uid']} è partito da qui verso $dest (giro ${t['round']})');
+          moves.add('${t['uid']} è partito da qui verso $dest ($how)');
         } else if (t['zone'] == me['zone'] && t['sector'] == me['sector']) {
-          moves.add('${t['uid']} è arrivato qui da $from (giro ${t['round']})');
+          moves.add('${t['uid']} è arrivato qui da $from ($how)');
         }
       }
     } else {

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
@@ -13,8 +14,11 @@ import '../services/location_service.dart';
 import '../services/party_service.dart';
 import '../services/session.dart';
 import '../services/table_service.dart';
+import '../items.dart';
 import '../table/events.dart';
+import '../table/sectors.dart';
 import '../table/zones.dart';
+import 'table_map.dart';
 import '../theme.dart';
 import '../widgets/clue_search.dart';
 import '../widgets/common.dart';
@@ -87,18 +91,231 @@ class _TableTabState extends State<TableTab> {
   // ------------------------------------------------------------------ azioni
 
   Future<void> _start(bool started) async {
+    if (kTableMode) return _startTable(started);
     final go = await _confirm(
       started ? 'Riavvia la partita' : 'Avvia la partita',
       started
           ? 'Giro, posizioni, trappole ed eventi ripartono da zero (strumenti e badge restano).'
-          : kTableMode
-              ? 'Verrà sorteggiato l’ordine dei turni, tutti partono dall’Hub e vengono pianificati gli eventi di zona.'
-              : 'Parte l’orologio dei giri (uno ogni ${await TableService.roundMinutes(_party!)} minuti) e vengono '
-                  'pianificati gli eventi di zona. La zona di ognuno la decide il GPS.',
+          : 'Parte l’orologio dei giri (uno ogni ${await TableService.roundMinutes(_party!)} minuti) e vengono '
+              'pianificati gli eventi di zona. La zona di ognuno la decide il GPS.',
       started ? 'Riavvia' : 'Avvia',
     );
     if (go) await _run(() => TableService.startGame(_party!, manualEvents: _manualNext), ok: 'Partita avviata!');
   }
+
+  /// Tavolo: "Nuova partita". Il Master vede i biomi estratti (Hub + giocatori + 1) e può cambiarli.
+  Future<void> _startTable(bool started) async {
+    final players = (await PartyService.players(_party!).get()).docs.length;
+    if (!mounted) return;
+    if (players > kMaxTablePlayers) {
+      snack(context, 'Al tavolo si gioca al massimo in $kMaxTablePlayers (ora siete $players)', error: true);
+      return;
+    }
+    final links = await TableService.partyLinks(_party!);
+    var sel = TableService.drawBiomes(players).toSet();
+    if (!mounted) return;
+    final biomes = await showDialog<List<String>>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(builder: (ctx, set) {
+        final isolated = TableService.unreachableBiomes(sel, links);
+        return AlertDialog(
+          title: Text(started ? 'Riavvia la partita' : 'Nuova partita'),
+          content: SizedBox(
+            width: 380,
+            child: ListView(shrinkWrap: true, children: [
+              Text(
+                '$players giocatori: l’Hub più ${min(7, players + 1)} biomi estratti a caso. Puoi cambiarli. '
+                '${started ? 'Giro, posizioni, trappole ed eventi ripartono da zero (strumenti e badge restano). ' : ''}'
+                'Tutti partono dall’Hub e l’ordine dei turni è sorteggiato.',
+                style: const TextStyle(fontSize: 12, color: Pal.sub),
+              ),
+              for (final z in kZones)
+                CheckboxListTile(
+                  dense: true,
+                  contentPadding: EdgeInsets.zero,
+                  title: Text(z.name),
+                  subtitle: z.id == 'hub' ? const Text('C’è sempre') : null,
+                  value: sel.contains(z.id),
+                  onChanged: z.id == 'hub' ? null : (v) => set(() => v == true ? sel.add(z.id) : sel.remove(z.id)),
+                ),
+              if (isolated.isNotEmpty)
+                Container(
+                  margin: const EdgeInsets.only(top: 8),
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(color: Pal.warn.withOpacity(0.15), borderRadius: BorderRadius.circular(10)),
+                  child: Text(
+                    '⚠️ Dall’Hub non si arriva a piedi in: ${isolated.map((z) => zoneSpec(z).name).join(', ')}. '
+                    'Si potrà andarci solo con Biglietto, treno o traghetto (puoi avviare lo stesso, '
+                    'oppure cambiare i collegamenti).',
+                    style: const TextStyle(fontSize: 12),
+                  ),
+                ),
+            ]),
+          ),
+          actions: [
+            TextButton(onPressed: () => set(() => sel = TableService.drawBiomes(players).toSet()), child: const Text('Riestrai')),
+            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Annulla')),
+            FilledButton(onPressed: () => Navigator.pop(ctx, sel.toList()), child: Text(started ? 'Riavvia' : 'Avvia')),
+          ],
+        );
+      }),
+    );
+    if (biomes == null) return;
+    await _run(() => TableService.startGame(_party!, manualEvents: _manualNext, biomes: biomes), ok: 'Partita avviata!');
+  }
+
+  /// Master: tipo e numero dei settori di ogni zona.
+  Future<void> _editSectors(Map<String, dynamic>? st) async {
+    final partyDoc = (await PartyService.party(_party!).get()).data();
+    final work = {for (final e in TableService.sectorsOf(st, partyDoc).entries) e.key: [...e.value]};
+    if (!mounted) return;
+    final save = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, set) => AlertDialog(
+          title: const Text('Settori delle zone'),
+          content: SizedBox(
+            width: 420,
+            child: ListView(shrinkWrap: true, children: [
+              Text(
+                'Scegli quanti settori ha ogni zona e di che tipo sono (${work.values.fold<int>(0, (a, l) => a + l.length)} '
+                'settori in tutto). Se togli dei settori a partita in corso, quello che c’era (giocatori, tracce, '
+                'indizi, trappole) finisce nell’ultimo settore rimasto.',
+                style: const TextStyle(fontSize: 12, color: Pal.sub),
+              ),
+              for (final z in kZones) ...[
+                Row(children: [
+                  Expanded(child: Text(z.name, style: const TextStyle(fontWeight: FontWeight.w800))),
+                  IconButton(
+                    tooltip: 'Togli un settore',
+                    onPressed: work[z.id]!.length <= kMinSectors ? null : () => set(() => work[z.id]!.removeLast()),
+                    icon: const Icon(Icons.remove_circle_outline),
+                  ),
+                  Text('${work[z.id]!.length}'),
+                  IconButton(
+                    tooltip: 'Aggiungi un settore',
+                    onPressed: work[z.id]!.length >= kMaxSectors ? null : () => set(() => work[z.id]!.add(SectorType.cittadino)),
+                    icon: const Icon(Icons.add_circle_outline),
+                  ),
+                ]),
+                Wrap(spacing: 8, runSpacing: 4, children: [
+                  for (var i = 0; i < work[z.id]!.length; i++)
+                    Row(mainAxisSize: MainAxisSize.min, children: [
+                      Text('${i + 1}', style: const TextStyle(fontWeight: FontWeight.w700, color: Pal.sub)),
+                      const SizedBox(width: 4),
+                      DropdownButton<SectorType>(
+                        value: work[z.id]![i],
+                        isDense: true,
+                        items: [
+                          for (final t in SectorType.values)
+                            DropdownMenuItem(
+                              value: t,
+                              child: Row(mainAxisSize: MainAxisSize.min, children: [
+                                Icon(t.icon, size: 16),
+                                const SizedBox(width: 4),
+                                Text(t.label, style: const TextStyle(fontSize: 13)),
+                              ]),
+                            ),
+                        ],
+                        onChanged: (t) => t == null ? null : set(() => work[z.id]![i] = t),
+                      ),
+                    ]),
+                ]),
+                const Divider(),
+              ],
+            ]),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => set(() {
+                work
+                  ..clear()
+                  ..addAll({for (final e in kDefaultSectors.entries) e.key: [...e.value]});
+              }),
+              child: const Text('Proposta'),
+            ),
+            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Annulla')),
+            FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Salva')),
+          ],
+        ),
+      ),
+    );
+    if (save == true) await _run(() => TableService.setSectorTypes(_party!, work), ok: 'Settori salvati');
+  }
+
+  /// Master: un giocatore chiede informazioni ai locali (in qualsiasi settore).
+  Future<void> _askLocals(Map<String, dynamic> st) async {
+    final order = st['order'] is List ? List<String>.from(st['order'] as List) : <String>[];
+    final who = await showDialog<String>(
+      context: context,
+      builder: (ctx) => SimpleDialog(title: const Text('Chi chiede ai locali?'), children: [
+        for (final p in order) SimpleDialogOption(onPressed: () => Navigator.pop(ctx, p), child: Text(p)),
+      ]),
+    );
+    if (who == null || !mounted) return;
+    final rollCtrl = TextEditingController();
+    LocalsReport? rep;
+    String? err;
+    var asking = false;
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(builder: (ctx, set) {
+        Future<void> ask() async {
+          set(() => asking = true);
+          try {
+            rep = await TableService.localsReport(_party!, who, roll: int.tryParse(rollCtrl.text.trim()));
+            err = null;
+          } catch (e) {
+            err = '$e'.replaceFirst('Exception: ', '');
+          }
+          set(() => asking = false);
+        }
+
+        return AlertDialog(
+          title: Text('Informazioni dai locali · $who'),
+          content: SizedBox(
+            width: 380,
+            child: ListView(shrinkWrap: true, children: [
+              Text(
+                'CD base $kLocalsBaseCd, poi in base al settore: cittadino −2, rifugio −1, selvaggio 0, impervio +2, passaggio 0.',
+                style: const TextStyle(fontSize: 12, color: Pal.sub),
+              ),
+              TextField(
+                controller: rollCtrl,
+                keyboardType: TextInputType.number,
+                decoration: const InputDecoration(labelText: 'Tiro d20 fatto al tavolo (vuoto = tira la app)'),
+              ),
+              if (err != null) Padding(padding: const EdgeInsets.only(top: 8), child: Text(err!, style: const TextStyle(color: Pal.bad))),
+              if (rep != null) ...[
+                const SizedBox(height: 10),
+                Text(rep!.place, style: const TextStyle(fontWeight: FontWeight.w700)),
+                Text('Tiro ${rep!.roll} contro CD ${rep!.cd}: ${rep!.success ? 'riuscito' : 'fallito'}',
+                    style: TextStyle(fontWeight: FontWeight.w800, color: rep!.success ? Pal.ok : Pal.bad)),
+                const SizedBox(height: 6),
+                if (!rep!.success) const Text('I locali non sanno nulla (o non vogliono parlare).'),
+                for (final l in rep!.lines) Padding(padding: const EdgeInsets.only(bottom: 4), child: Text('• $l')),
+              ],
+            ]),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Chiudi')),
+            FilledButton(onPressed: asking ? null : ask, child: Text(rep == null ? 'Chiedi' : 'Chiedi di nuovo')),
+          ],
+        );
+      }),
+    );
+  }
+
+  /// Incontro selvatico (settore selvaggio): affrontarlo o fuggire.
+  Future<void> _wild(bool fight) => _run(() async {
+        if (fight) {
+          final id = await TableService.fightWild(party: _party!, uid: _s.userName!, pk: _s.pokemonId!);
+          if (mounted) widget.onBattle(id);
+        } else {
+          await TableService.fleeWild(_party!, _s.userName!);
+          if (mounted) snack(context, 'Sei fuggito (−$kWildFleeCost azione)');
+        }
+      });
 
   /// Master: decide quali zone sono collegate tra loro.
   Future<void> _editLinks(Map<String, dynamic>? st) async {
@@ -174,11 +391,12 @@ class _TableTabState extends State<TableTab> {
     if (def == null || !mounted) return;
     String? zone;
     if (def.legendary) {
+      // al tavolo compare in un settore impervio: si propongono i biomi in gioco che ne hanno uno
       zone = await showDialog<String>(
         context: context,
         builder: (ctx) => SimpleDialog(title: const Text('In quale zona?'), children: [
-          for (final z in kZones.where((z) => z.id != 'hub'))
-            SimpleDialogOption(onPressed: () => Navigator.pop(ctx, z.id), child: Text(z.name)),
+          for (final z in TableService.legendaryZones())
+            SimpleDialogOption(onPressed: () => Navigator.pop(ctx, z), child: Text(zoneSpec(z).name)),
         ]),
       );
       if (zone == null || !mounted) return;
@@ -216,45 +434,22 @@ class _TableTabState extends State<TableTab> {
         await LiveService.setZone(_party!, z.id, p.latitude, p.longitude, cur?.radius ?? kDefaultZoneRadius);
       }, ok: '${z.name} posizionata qui');
 
-  Future<void> _move(ZoneSpec z, int sector, Map<String, dynamic> st, List<Map<String, dynamic>> events, Map? pos) async {
-    if (!kTableMode) {
+  /// Dal vivo le schede zona sono solo informative: ci si sposta camminando.
+  void _move(ZoneSpec z, int sector, Map<String, dynamic> st, List<Map<String, dynamic>> events, Map? pos) =>
       snack(context, 'Dal vivo ti sposti camminando: zona e settore li decide il GPS');
-      return;
-    }
-    final me = _s.userName!;
-    final order = List<String>.from(st['order'] as List);
-    if (order[_i(st['idx'])] != me) {
-      snack(context, 'Non è il tuo turno');
-      return;
-    }
-    if (TableService.blockedSectors(events, z.id, shield: _shield).contains(sector)) {
-      snack(context, 'Questo settore è bloccato');
-      return;
-    }
-    final cost = TableService.moveCost(events, pos?['zone'] as String?, z.id, shield: _shield);
-    final route = TableService.routeTo(st, events, pos?['zone'] as String?, z.id);
-    var ticket = false;
-    if (route == MoveRoute.ticket) {
-      final qty = ItemService.readInventory((await ItemService.userRef(me).get()).data())['biglietto'] ?? 0;
-      if (qty <= 0) {
-        snack(context, '${z.name} non è collegata alla tua zona: serve un Biglietto (o un treno/traghetto).', error: true);
-        return;
-      }
-      ticket = true;
-    }
-    final go = await _confirm(
-      'Spostamento',
-      'Vai in ${z.name}, settore $sector?\nCosto: $cost ${cost == 1 ? 'azione' : 'azioni'}.'
-          '${ticket ? '\nZona non collegata: usi 1 Biglietto.' : ''}'
-          '${route == MoveRoute.passage ? '\nViaggi con il treno/traghetto: niente Biglietto.' : ''}',
-      'Vai',
-    );
-    if (!go) return;
-    await _run(() async {
-      final msg = await TableService.moveTo(party: _party!, uid: me, zone: z.id, sector: sector, useTicket: ticket);
-      if (msg != null && mounted) snack(context, msg, error: true);
-    });
-  }
+
+  /// Tavolo: conferma dal pannello dei settori della mappa (il costo è già scritto sul bottone).
+  Future<void> _moveTo(ZoneSpec z, int sector, {required bool ticket, required bool visibleTrace}) => _run(() async {
+        final msg = await TableService.moveTo(
+          party: _party!,
+          uid: _s.userName!,
+          zone: z.id,
+          sector: sector,
+          useTicket: ticket,
+          visibleTrace: visibleTrace,
+        );
+        if (msg != null && mounted) snack(context, msg, error: true);
+      });
 
   // ---------------------------------------------------------------------- UI
 
@@ -282,11 +477,21 @@ class _TableTabState extends State<TableTab> {
               for (final d in evSnap.data?.docs ?? <QueryDocumentSnapshot<Map<String, dynamic>>>[]) {...d.data(), 'id': d.id},
             ];
             return StreamBuilder<Map<String, dynamic>?>(
-              stream: ItemService.watchUser(me),
+              stream: PartyService.watchParty(_party!),
+              builder: (context, pSnap) => StreamBuilder<Map<String, dynamic>>(
+              stream: ItemService.watchUserFields(
+                  me, const ['pos', 'shield', 'busyUntil', 'searchReadyAt', 'wildEncounter', 'inventory']),
               builder: (context, uSnap) {
                 final pos = uSnap.data?['pos'] as Map?;
                 _shield = ItemService.shieldZone(uSnap.data);
                 final table = kTableMode;
+                if (table) {
+                  // settori e biomi della partita (o, prima dell'avvio, quelli scelti per il party)
+                  TableLayout.sectors = TableService.sectorsOf(st, pSnap.data);
+                  TableLayout.biomes = started ? TableService.biomesOf(st) : null;
+                }
+                final myTurn = st?['order'] is List && List<String>.from(st!['order'] as List)[_i(st['idx'])] == me;
+                final wild = uSnap.data?['wildEncounter'] as Map?;
                 return Column(children: [
                   SectionTitle(table ? 'Tavolo' : 'Partita'),
                   if (_master) _masterTools(started, st, events),
@@ -302,18 +507,28 @@ class _TableTabState extends State<TableTab> {
                   else ...[
                     if (table && st!['order'] is List) _turnCard(st, me) else if (!table) _clockCard(st!, uSnap.data),
                     _positionCard(pos),
+                    if (table && wild != null) _wildCard(wild),
                     ..._eventCards(events, st!, pos, me),
                     SectionTitle(table ? 'Mappa' : 'Zone'),
-                    if (table)
-                      ClueSearchButton(
-                        party: _party!,
-                        uid: me,
-                        enabled: st['order'] is List && List<String>.from(st['order'] as List)[_i(st['idx'])] == me,
+                    if (table) ...[
+                      ClueSearchButton(party: _party!, uid: me, enabled: myTurn),
+                      const SizedBox(height: 6),
+                      TableMap(
+                        state: st,
+                        events: events,
+                        pos: pos,
+                        shield: _shield,
+                        myTurn: myTurn,
+                        ticketCount: ItemService.readInventory(uSnap.data)['biglietto'] ?? 0,
+                        busy: _busy,
+                        onMove: _moveTo,
                       ),
-                    for (final z in kZones) _zoneCard(z, pos, events, st, me),
+                    ] else
+                      for (final z in kZones) _zoneCard(z, pos, events, st, me),
                   ],
                 ]);
               },
+            ),
             );
           },
         );
@@ -382,19 +597,37 @@ class _TableTabState extends State<TableTab> {
             ),
         ],
         const SizedBox(height: 8),
-        if (kTableMode)
+        if (kTableMode) ...[
           DropButton(
             label: 'Collegamenti tra zone',
             icon: Icons.alt_route,
             colors: Pal.neutral,
             height: 44,
             onTap: _busy ? null : () => _editLinks(st),
-          )
-        else
+          ),
+          const SizedBox(height: 8),
+          DropButton(
+            label: 'Settori delle zone',
+            icon: Icons.grid_view,
+            colors: Pal.neutral,
+            height: 44,
+            onTap: _busy ? null : () => _editSectors(st),
+          ),
+          if (started) ...[
+            const SizedBox(height: 8),
+            DropButton(
+              label: 'Informazioni dai locali',
+              icon: Icons.record_voice_over,
+              colors: Pal.gold,
+              height: 44,
+              onTap: _busy ? null : () => _askLocals(st!),
+            ),
+          ],
+        ] else
           _liveMasterTools(st),
         const SizedBox(height: 12),
         DropButton(
-          label: started ? 'Riavvia la partita' : 'Avvia la partita',
+          label: started ? 'Riavvia la partita' : (kTableMode ? 'Nuova partita' : 'Avvia la partita'),
           icon: Icons.rocket_launch,
           busy: _busy,
           onTap: () => _start(started),
@@ -411,10 +644,33 @@ class _TableTabState extends State<TableTab> {
     );
   }
 
+  /// Pokémon selvatico che ti sbarra la strada (resta finché non scegli).
+  Widget _wildCard(Map wild) {
+    final z = zoneSpec('${wild['zone']}');
+    return DropCard(
+      colors: typeColors('${wild['type']}'),
+      label: 'Incontro selvatico',
+      labelOnTop: true,
+      child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+        Text('Un ${wild['name']} selvatico!', style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w800)),
+        Text('${z.name}, settore ${wild['sector']}', style: const TextStyle(color: Pal.sub, fontSize: 12)),
+        const SizedBox(height: 6),
+        Text('Se vinci: +$kCoinsWild 🪙 e ${(kWildDropChance * 100).round()}% di uno strumento. '
+            'Fuggire costa $kWildFleeCost azione.', style: const TextStyle(fontSize: 12)),
+        const SizedBox(height: 10),
+        Row(children: [
+          Expanded(child: DropButton(label: 'Affronta', icon: Icons.bolt, height: 44, onTap: _busy ? null : () => _wild(true))),
+          const SizedBox(width: 10),
+          Expanded(child: DropButton(label: 'Fuggi', colors: Pal.neutral, height: 44, onTap: _busy ? null : () => _wild(false))),
+        ]),
+      ]),
+    );
+  }
+
   /// Master dal vivo: durata del giro e posizione delle zone sulla mappa.
   Widget _liveMasterTools(Map<String, dynamic>? st) {
     return StreamBuilder<Map<String, dynamic>?>(
-      stream: PartyService.party(_party!).snapshots().map((s) => s.data()),
+      stream: PartyService.watchParty(_party!),
       builder: (context, snap) {
         final zones = LiveService.zonesOf(snap.data);
         final mins = (snap.data?['roundMinutes'] as num?)?.toInt() ?? kDefaultRoundMinutes;
@@ -548,7 +804,19 @@ class _TableTabState extends State<TableTab> {
           style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
         ),
         if (!kTableMode)
-          const Text('La aggiorna il GPS mentre cammini.', style: TextStyle(color: Pal.sub, fontSize: 12)),
+          const Text('La aggiorna il GPS mentre cammini.', style: TextStyle(color: Pal.sub, fontSize: 12))
+        else if (z != null && TableLayout.typeOf(z.id, _i(pos!['sector'])) != null)
+          Builder(builder: (_) {
+            final t = TableLayout.typeOf(z.id, _i(pos['sector']))!;
+            return Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Icon(t.icon, size: 18, color: Pal.sub),
+                const SizedBox(width: 6),
+                Expanded(child: Text('${t.label}: ${t.rules}', style: const TextStyle(color: Pal.sub, fontSize: 12))),
+              ]),
+            );
+          }),
       ]),
     );
   }
@@ -613,12 +881,20 @@ class _TableTabState extends State<TableTab> {
               ],
               if (active && def.legendary) ...[
                 const SizedBox(height: 10),
-                DropButton(
-                  label: defeated ? 'Già sconfitto' : (here ? 'Sfida ${e['legendaryName']}' : 'Devi essere in ${z.name}'),
+                Builder(builder: (_) {
+                  // al tavolo il leggendario sta in un settore preciso (impervio)
+                  final sec = kTableMode && e['sector'] != null ? _i(e['sector']) : null;
+                  final there = here && (sec == null || _i(pos?['sector']) == sec);
+                  return DropButton(
+                  label: defeated
+                      ? 'Già sconfitto'
+                      : (there
+                          ? 'Sfida ${e['legendaryName']}'
+                          : 'Devi essere in ${z.name}${sec == null ? '' : ', settore $sec'}'),
                   icon: Icons.bolt,
                   colors: Pal.gold,
                   height: 44,
-                  onTap: (_busy || defeated || !here)
+                  onTap: (_busy || defeated || !there)
                       ? null
                       : () => _run(() async {
                             final s = _s;
@@ -638,7 +914,8 @@ class _TableTabState extends State<TableTab> {
                             );
                             if (mounted) widget.onBattle(id);
                           }),
-                ),
+                  );
+                }),
               ],
             ]),
           );
@@ -760,8 +1037,8 @@ class TurnBar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final uid = context.read<Session>().userName!;
-    return StreamBuilder<Map<String, dynamic>?>(
-      stream: ItemService.watchUser(uid),
+    return StreamBuilder<Map<String, dynamic>>(
+      stream: ItemService.watchUserFields(uid, const ['actualParty', 'pos', 'busyUntil']),
       builder: (context, uSnap) {
         final p = uSnap.data?['actualParty'];
         if (p is! String || p.isEmpty) return const SizedBox.shrink();
@@ -814,7 +1091,8 @@ class TableWatcher extends StatefulWidget {
 }
 
 class _TableWatcherState extends State<TableWatcher> {
-  StreamSubscription? _userSub, _stateSub, _evSub, _zoneSub;
+  StreamSubscription? _userSub, _stateSub, _evSub, _zoneSub, _partySub;
+  Map<String, dynamic>? _lastState, _partyDoc;
   Timer? _clock;
   String? _party;
   String? _turnKey;
@@ -855,6 +1133,8 @@ class _TableWatcherState extends State<TableWatcher> {
     _stateSub?.cancel();
     _evSub?.cancel();
     _zoneSub?.cancel();
+    _partySub?.cancel();
+    _lastState = _partyDoc = null;
     _party = party;
     _turnKey = null;
     _lastRound = null;
@@ -865,6 +1145,11 @@ class _TableWatcherState extends State<TableWatcher> {
     if (party == null) return;
     _stateSub = TableService.watchState(party).listen(_onState);
     _evSub = TableService.watchEvents(party).listen(_onEvents);
+    // settori e biomi sempre aggiornati (servono anche fuori dalla tab Tavolo, es. all'Emporio)
+    _partySub = PartyService.watchParty(party).listen((p) {
+      _partyDoc = p;
+      _syncLayout();
+    });
     if (!kTableMode) {
       _zoneSub = LiveService.watchZones(party).listen((z) {
         _zones = z;
@@ -894,7 +1179,15 @@ class _TableWatcherState extends State<TableWatcher> {
     }
   }
 
+  void _syncLayout() {
+    if (!kTableMode) return;
+    TableLayout.sectors = TableService.sectorsOf(_lastState, _partyDoc);
+    TableLayout.biomes = _lastState?['started'] == true ? TableService.biomesOf(_lastState) : null;
+  }
+
   void _onState(Map<String, dynamic>? st) {
+    _lastState = st;
+    _syncLayout();
     if (st == null) return;
     TableClock.round = _i(st['round']);
     _started = st['started'] == true;
@@ -950,6 +1243,7 @@ class _TableWatcherState extends State<TableWatcher> {
     _stateSub?.cancel();
     _evSub?.cancel();
     _zoneSub?.cancel();
+    _partySub?.cancel();
     _clock?.cancel();
     super.dispose();
   }
@@ -972,11 +1266,11 @@ class ZoneEventsStrip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final uid = context.read<Session>().userName!;
-    return StreamBuilder<Map<String, dynamic>?>(
-      stream: ItemService.watchUser(uid),
+    return StreamBuilder<String?>(
+      stream: ItemService.watchActualParty(uid),
       builder: (context, uSnap) {
-        final p = uSnap.data?['actualParty'];
-        if (p is! String || p.isEmpty) return const SizedBox.shrink();
+        final p = uSnap.data;
+        if (p == null) return const SizedBox.shrink();
         return StreamBuilder<Map<String, dynamic>?>(
           stream: TableService.watchState(p),
           builder: (context, stSnap) {

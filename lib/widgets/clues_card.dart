@@ -9,6 +9,8 @@ import '../mode.dart';
 import '../services/clue_service.dart';
 import '../services/location_service.dart';
 import '../services/party_service.dart';
+import '../services/table_service.dart';
+import '../table/sectors.dart';
 import '../table/zones.dart';
 import '../theme.dart';
 import 'common.dart';
@@ -83,8 +85,12 @@ class _CluesCardState extends State<CluesCard> {
       }
       return {'lat': p.latitude, 'lng': p.longitude};
     }
-    var zone = kZones.first.id;
+    // solo i biomi in gioco (se la partita è già avviata) e i settori della disposizione in uso
+    await TableService.loadLayout(widget.party);
+    final zones = TableLayout.zonesInPlay;
+    var zone = zones.first.id;
     var sector = 1;
+    if (!mounted) return null;
     return showDialog<Map<String, dynamic>>(
       context: context,
       builder: (ctx) => StatefulBuilder(builder: (ctx, setS) {
@@ -96,7 +102,7 @@ class _CluesCardState extends State<CluesCard> {
               DropdownButton<String>(
                 isExpanded: true,
                 value: zone,
-                items: [for (final x in kZones) DropdownMenuItem(value: x.id, child: Text(x.name))],
+                items: [for (final x in zones) DropdownMenuItem(value: x.id, child: Text(x.name))],
                 onChanged: (v) => setS(() {
                   zone = v!;
                   sector = 1;
@@ -105,7 +111,13 @@ class _CluesCardState extends State<CluesCard> {
               const SizedBox(height: 12),
               Wrap(spacing: 8, children: [
                 for (var n = 1; n <= z.sectors; n++)
-                  ChoiceChip(label: Text('$n'), selected: sector == n, onSelected: (_) => setS(() => sector = n)),
+                  ChoiceChip(
+                    avatar: TableLayout.typeOf(zone, n) == null ? null : Icon(TableLayout.typeOf(zone, n)!.icon, size: 16),
+                    label: Text('$n'),
+                    tooltip: TableLayout.typeOf(zone, n)?.label,
+                    selected: sector == n,
+                    onSelected: (_) => setS(() => sector = n),
+                  ),
               ]),
             ]),
           ),
@@ -144,7 +156,7 @@ class _CluesCardState extends State<CluesCard> {
               for (final d in cSnap.data?.docs ?? <QueryDocumentSnapshot<Map<String, dynamic>>>[]) {...d.data(), 'id': d.id},
             ];
             return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-              stream: PartyService.players(widget.party).snapshots(),
+              stream: PartyService.watchPlayers(widget.party),
               builder: (context, pSnap) {
                 final players = pSnap.data?.docs ?? <QueryDocumentSnapshot<Map<String, dynamic>>>[];
                 Map<String, dynamic>? mine;

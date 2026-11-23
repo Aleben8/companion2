@@ -15,8 +15,8 @@ class BadgeRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final uid = context.read<Session>().userName!;
-    return StreamBuilder<Map<String, dynamic>?>(
-      stream: ItemService.watchUser(uid),
+    return StreamBuilder<Map<String, dynamic>>(
+      stream: ItemService.watchUserFields(uid, const ['badges']),
       builder: (context, snap) {
         final raw = snap.data?['badges'];
         final badges = raw is Map ? raw : const {};
