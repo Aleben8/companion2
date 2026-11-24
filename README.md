@@ -49,14 +49,15 @@ Entrambe le modalità usano lo stesso progetto Firebase (`lib/firebase_options.d
 - **Turni.** All'avvio l'ordine è casuale. Ogni turno dà **2 azioni con un numero DISPARI di giocatori, 3 con un numero PARI**
   (`kActionsOdd`/`kActionsEven` in `lib/mode.dart`). Chi gioca usa "Ho usato un'azione" per le azioni fatte al tavolo e
   "Fine turno" per passare. Quando tutti hanno giocato il **giro** avanza. La barra in alto mostra giro, chi gioca e le azioni rimaste.
-- **Posizione.** Dopo aver mosso la pedina sul tabellone, il giocatore la sposta anche sulla **mappa disegnata** della tab
+- **Posizione.** Dopo aver mosso la pedina sul tabellone, il giocatore la sposta anche sulla **mappa** della tab
   **Tavolo**: tocca la zona, sceglie il settore nel pannello che compare sotto e conferma con un solo bottone
   ("Vai: zona, settore N · costo"). Ogni spostamento costa 1 azione (`kMoveActionCost`). Le posizioni sono private: le altre
   si scoprono con il Radar. Al tavolo si gioca **al massimo in 9** (`kMaxTablePlayers`).
-- **Mappa.** Zone come rettangoli arrotondati con le linee dei collegamenti; la tua zona ha l'etichetta "Tu", sopra le zone
-  raggiungibili a piedi c'è il costo in azioni, quelle non collegate sono tratteggiate ("Biglietto" o "Treno/traghetto"),
-  un'icona segna gli eventi in corso. Posizioni delle zone in `kZoneMapPos` (`lib/table/zones.dart`): è un primo disegno
-  semplice, si può sostituire con l'immagine del tabellone (sfondo dello Stack in `lib/screens/table_map.dart`).
+- **Mappa.** Un pulsante per ogni zona in gioco, con le miniature dei suoi settori (icona del tipo e numero; settori
+  bloccati barrati, ⚡ dove c'è il leggendario, bordo sul settore dove sei). Sono **colorate** le zone dove puoi andare adesso
+  (è il tuo turno, hai le azioni e, per Biglietto/treno/traghetto, sei nel settore di passaggio), **grigie** e non
+  selezionabili le altre. Sul pulsante: "Tu", il costo in azioni oppure "Biglietto" / "Treno/traghetto", e un'icona per gli
+  eventi in corso. Codice: `lib/screens/table_map.dart`, regola in `TableService.canReach`.
 - **Minuti -> giri.** Repellente 2 giri, recupero dopo la sconfitta 1 giro, divieto di riaffrontarsi dopo una fuga 2 giri,
   Trappola = si salta il turno successivo (valori in `lib/items.dart`).
 - **Strumenti.** Radar mostra zona e settore degli altri, Calmanella rivela la tua zona, Trappola si piazza nel tuo settore e scatta
@@ -117,7 +118,13 @@ Distribuzione di partenza (30 settori):
 ### Tracce e informazioni dai locali
 
 - **Forza delle tracce.** Ogni spostamento e ogni ricerca lascia una traccia di forza 1–3: base 1, **+1 con la spunta "Lascia una traccia ben visibile"** (nel pannello di spostamento), più il modificatore del settore. La Lente vede una traccia per *forza × 2* giri e ne dice la forza (debole, chiara, evidente). Costanti in `lib/table/sectors.dart`.
-- **Informazioni dai locali** (riquadro Master, a partita in corso, in **qualsiasi** settore). Il Master sceglie il giocatore che chiede e tira d20 (o scrive il tiro fatto al tavolo) contro la **CD 12** modificata dal tipo di settore (cittadino −2, rifugio −1, selvaggio 0, impervio +2, passaggio 0). Se riesce, i locali raccontano chi è passato nella zona negli ultimi 3 giri (con la forza della traccia), gli eventi in arrivo nella zona e se qualcuno ha nascosto indizi lì. Codice: `TableService.localsReport`.
+- **Informazioni dai locali** (riquadro Master, a partita in corso, in **qualsiasi** settore; è l'unico bottone che resta
+  fuori dagli strumenti del Master, che sono comprimibili). Il Master sceglie il giocatore: la finestra dice solo il
+  **modificatore di CD** del settore (cittadino −2, rifugio −1, selvaggio 0, impervio +2, passaggio 0). Il tiro si fa al
+  tavolo e il Master risponde "Sì" o "No" alla domanda "ha superato la CD?". Il racconto dei locali (chi è passato nella zona
+  negli ultimi 3 giri con la forza della traccia, gli eventi in arrivo, se qualcuno ha nascosto indizi lì) lo vede **solo il
+  giocatore**, in una scheda nella sua tab Tavolo: il Master, che gioca, non lo legge. Codice: `TableService.localsCheck` e
+  `sendLocals` (salva su `Users/{uid}.localsInfo`).
 
 ### Proposta per il futuro (non fatta): una mappa con più settori
 
@@ -223,7 +230,7 @@ lib/
   services/mode_service.dart      segue la modalità scelta dal Master per il party
   services/live_service.dart      zone GPS, settori, attese del live
   table/                          zone, settori e loro tipi (sectors.dart), eventi di zona, tabella dei tipi
-  screens/table_map.dart          mappa disegnata del Tavolo e pannello dei settori
+  screens/table_map.dart          mappa a pulsanti del Tavolo e pannello dei settori
   services/table_service.dart     turni, spostamenti, eventi, leggendario
   services/clue_service.dart      indizi: piazzamento, ricerca, dichiarazione
   widgets/clues_card.dart         scheda "Indizi sulla mappa" (tab Party)

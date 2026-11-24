@@ -19,14 +19,13 @@ import 'shared_stream.dart';
 /// Esito di [TableService.routeTo].
 enum MoveRoute { direct, passage, ticket }
 
-/// Esito delle informazioni dai locali (finestra del Master).
-class LocalsReport {
+/// Dove si trova chi chiede ai locali (finestra del Master: vede solo il modificatore di CD).
+class LocalsCheck {
   final String uid;
   final String place;
-  final int cd, roll;
-  final bool success;
-  final List<String> lines;
-  const LocalsReport(this.uid, this.place, this.cd, this.roll, this.success, this.lines);
+  final SectorType? type;
+  const LocalsCheck(this.uid, this.place, this.type);
+  int get cdModifier => type?.localsCdModifier ?? 0;
 }
 
 /// Partita a zone: turni, azioni, posizione per zona/settore ed eventi di zona.
@@ -151,6 +150,7 @@ class TableService {
           'searchReadyAt': FieldValue.delete(),
           'wildEncounter': FieldValue.delete(),
           'refugeRound': FieldValue.delete(),
+          'localsInfo': FieldValue.delete(),
           'trappedSkip': 0,
           'actionPenalty': 0,
           // effetti di partite precedenti (i giri ripartono da 1)
@@ -685,6 +685,38 @@ class TableService {
   /// Dove arrivano Biglietto, treno e traghetto: il settore di passaggio della zona.
   static int? arrivalSector(String zone) => TableLayout.firstOf(zone, SectorType.passaggio);
 
+  /// Pulsanti della mappa: le zone dove il giocatore di turno può andare adesso (colorate; le altre
+  /// in grigio). A piedi: zone collegate (o la propria, se c'è un altro settore libero) con azioni
+  /// sufficienti. Biglietto / treno / traghetto: solo dal settore di passaggio, verso il passaggio della zona.
+  static bool canReach({
+    required Map<String, dynamic>? state,
+    required List<Map<String, dynamic>> events,
+    required Map? pos,
+    required String to,
+    required int actionsLeft,
+    required int tickets,
+    String? shield,
+  }) {
+    final from = pos?['zone'] as String?;
+    final fromSector = _i(pos?['sector']);
+    final route = routeTo(state, events, from, to);
+    final blocked = blockedSectors(events, to, shield: shield);
+    bool ok(int s) =>
+        !blocked.contains(s) &&
+        !(from == to && s == fromSector) &&
+        moveCost(events, from, to, shield: shield, sector: s) <= actionsLeft;
+    if (route == MoveRoute.direct) {
+      for (var s = 1; s <= TableLayout.count(to); s++) {
+        if (ok(s)) return true;
+      }
+      return false;
+    }
+    if (from != null && TableLayout.typeOf(from, fromSector) != SectorType.passaggio) return false;
+    if (route == MoveRoute.ticket && tickets <= 0) return false;
+    final arrival = arrivalSector(to);
+    return arrival != null && ok(arrival);
+  }
+
   static Set<int> blockedSectors(List<Map<String, dynamic>> events, String zone, {String? shield}) => shield == zone
       ? <int>{}
       : {
@@ -768,19 +800,35 @@ class TableService {
   /// CD per avere informazioni dai locali nel settore del giocatore.
   static int localsCd(SectorType? type) => kLocalsBaseCd + (type?.localsCdModifier ?? 0);
 
-  /// Il Master chiede ai locali per conto di un giocatore (in qualsiasi settore).
-  /// Tiro d20 (o [roll] se il Master lo tira al tavolo) contro la CD del settore: se riesce,
-  /// i locali raccontano chi è passato nella zona di recente, gli eventi in arrivo e se ci sono indizi.
-  static Future<LocalsReport> localsReport(String party, String uid, {int? roll}) async {
+  /// Dove si trova [uid] e quale modificatore di CD vale lì (per la finestra del Master).
+  static Future<LocalsCheck> localsCheck(String party, String uid) async {
     await loadLayout(party);
     final pos = (await ItemService.userRef(uid).get()).data()?['pos'] as Map?;
     if (pos == null) throw Exception('$uid non è ancora sulla mappa');
     final zone = '${pos['zone']}';
     final type = TableLayout.typeOf(zone, _i(pos['sector']));
-    final cd = localsCd(type);
-    final r = roll ?? _rnd.nextInt(20) + 1;
     final place = '${zoneSpec(zone).name}, settore ${pos['sector']}${type == null ? '' : ' (${type.label.toLowerCase()})'}';
-    if (r < cd) return LocalsReport(uid, place, cd, r, false, const []);
+    return LocalsCheck(uid, place, type);
+  }
+
+  /// Il Master ha visto il tiro al tavolo e dice se [uid] ha superato la CD. Il racconto dei locali
+  /// (chi è passato nella zona di recente, eventi in arrivo, indizi nascosti) finisce su
+  /// `Users/{uid}.localsInfo` e lo vede solo quel giocatore: il Master, che gioca, non lo legge.
+  static Future<void> sendLocals(String party, String uid, {required bool success}) async {
+    final check = await localsCheck(party, uid);
+    final lines = success ? await _localsLines(party, uid) : const <String>[];
+    await ItemService.userRef(uid).set({
+      'localsInfo': {'place': check.place, 'success': success, 'lines': lines, 'round': TableClock.round},
+    }, SetOptions(merge: true));
+  }
+
+  /// Il giocatore chiude il messaggio dei locali.
+  static Future<void> dismissLocals(String uid) =>
+      ItemService.userRef(uid).update({'localsInfo': FieldValue.delete()});
+
+  static Future<List<String>> _localsLines(String party, String uid) async {
+    final pos = (await ItemService.userRef(uid).get()).data()?['pos'] as Map?;
+    final zone = '${pos?['zone']}';
     final lines = <String>[];
     final round = TableClock.round;
     final traces = (await PartyService.party(party).collection('traces').get()).docs.map((d) => d.data()).where((t) =>
@@ -803,7 +851,7 @@ class TableService {
         .where((d) => d.data()['ownerUid'] != uid && (d.data()['place'] as Map?)?['zone'] == zone)
         .length;
     lines.add(clues == 0 ? 'Nessuno ha visto nascondere qualcosa in zona' : 'Qualcuno ha nascosto qualcosa in zona ($clues)');
-    return LocalsReport(uid, place, cd, r, true, lines);
+    return lines;
   }
 
   // ------------------------------------------------------------- rifugi

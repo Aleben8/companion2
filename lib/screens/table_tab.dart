@@ -42,6 +42,7 @@ class _TableTabState extends State<TableTab> {
   bool _loading = true;
   bool _busy = false;
   bool _manualNext = false; // modalità eventi scelta prima dell'avvio
+  bool _masterOpen = false; // scheda Master aperta o chiusa
   String? _shield; // zona protetta da un'Ombrello di bioma attivo
 
   Session get _s => context.read<Session>();
@@ -243,7 +244,9 @@ class _TableTabState extends State<TableTab> {
     if (save == true) await _run(() => TableService.setSectorTypes(_party!, work), ok: 'Settori salvati');
   }
 
-  /// Master: un giocatore chiede informazioni ai locali (in qualsiasi settore).
+  /// Master: un giocatore chiede informazioni ai locali (in qualsiasi settore). La finestra dice solo
+  /// il modificatore di CD del settore; il tiro si fa al tavolo e il Master dice se è riuscito.
+  /// Il racconto dei locali lo vede solo il giocatore (il Master, che gioca, non lo legge).
   Future<void> _askLocals(Map<String, dynamic> st) async {
     final order = st['order'] is List ? List<String>.from(st['order'] as List) : <String>[];
     final who = await showDialog<String>(
@@ -253,56 +256,62 @@ class _TableTabState extends State<TableTab> {
       ]),
     );
     if (who == null || !mounted) return;
-    final rollCtrl = TextEditingController();
-    LocalsReport? rep;
-    String? err;
-    var asking = false;
-    await showDialog<void>(
+    LocalsCheck check;
+    try {
+      check = await TableService.localsCheck(_party!, who);
+    } catch (e) {
+      if (mounted) snack(context, '$e'.replaceFirst('Exception: ', ''), error: true);
+      return;
+    }
+    if (!mounted) return;
+    final m = check.cdModifier;
+    final success = await showDialog<bool>(
       context: context,
-      builder: (ctx) => StatefulBuilder(builder: (ctx, set) {
-        Future<void> ask() async {
-          set(() => asking = true);
-          try {
-            rep = await TableService.localsReport(_party!, who, roll: int.tryParse(rollCtrl.text.trim()));
-            err = null;
-          } catch (e) {
-            err = '$e'.replaceFirst('Exception: ', '');
-          }
-          set(() => asking = false);
-        }
+      builder: (ctx) => AlertDialog(
+        title: Text('Informazioni dai locali · $who'),
+        content: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text(check.place, style: const TextStyle(color: Pal.sub, fontSize: 12)),
+          const SizedBox(height: 10),
+          Text('Modificatore di CD: ${m == 0 ? 'nessuno' : (m > 0 ? '+$m' : '−${-m}')}',
+              style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w800)),
+          const SizedBox(height: 12),
+          Text('$who ha superato la CD?', style: const TextStyle(fontWeight: FontWeight.w700)),
+          const SizedBox(height: 4),
+          const Text('Quello che raccontano i locali lo vedrà solo il giocatore.',
+              style: TextStyle(color: Pal.sub, fontSize: 12)),
+        ]),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Annulla')),
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('No')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Sì')),
+        ],
+      ),
+    );
+    if (success == null) return;
+    await _run(() => TableService.sendLocals(_party!, who, success: success), ok: 'Inviato a $who');
+  }
 
-        return AlertDialog(
-          title: Text('Informazioni dai locali · $who'),
-          content: SizedBox(
-            width: 380,
-            child: ListView(shrinkWrap: true, children: [
-              Text(
-                'CD base $kLocalsBaseCd, poi in base al settore: cittadino −2, rifugio −1, selvaggio 0, impervio +2, passaggio 0.',
-                style: const TextStyle(fontSize: 12, color: Pal.sub),
-              ),
-              TextField(
-                controller: rollCtrl,
-                keyboardType: TextInputType.number,
-                decoration: const InputDecoration(labelText: 'Tiro d20 fatto al tavolo (vuoto = tira la app)'),
-              ),
-              if (err != null) Padding(padding: const EdgeInsets.only(top: 8), child: Text(err!, style: const TextStyle(color: Pal.bad))),
-              if (rep != null) ...[
-                const SizedBox(height: 10),
-                Text(rep!.place, style: const TextStyle(fontWeight: FontWeight.w700)),
-                Text('Tiro ${rep!.roll} contro CD ${rep!.cd}: ${rep!.success ? 'riuscito' : 'fallito'}',
-                    style: TextStyle(fontWeight: FontWeight.w800, color: rep!.success ? Pal.ok : Pal.bad)),
-                const SizedBox(height: 6),
-                if (!rep!.success) const Text('I locali non sanno nulla (o non vogliono parlare).'),
-                for (final l in rep!.lines) Padding(padding: const EdgeInsets.only(bottom: 4), child: Text('• $l')),
-              ],
-            ]),
-          ),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Chiudi')),
-            FilledButton(onPressed: asking ? null : ask, child: Text(rep == null ? 'Chiedi' : 'Chiedi di nuovo')),
-          ],
-        );
-      }),
+  /// Il messaggio dei locali (lo vede solo chi ha chiesto).
+  Widget _localsCard(Map info, String me) {
+    final ok = info['success'] == true;
+    final lines = [for (final l in (info['lines'] as List? ?? [])) '$l'];
+    return DropCard(
+      colors: Pal.gold,
+      label: 'I locali ti raccontano',
+      labelOnTop: true,
+      child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+        Text('${info['place']}', style: const TextStyle(color: Pal.sub, fontSize: 12)),
+        const SizedBox(height: 6),
+        if (!ok) const Text('I locali non sanno nulla (o non vogliono parlare).'),
+        for (final l in lines) Padding(padding: const EdgeInsets.only(bottom: 4), child: Text('• $l')),
+        const SizedBox(height: 6),
+        DropButton(
+          label: 'Ho letto',
+          colors: Pal.neutral,
+          height: 40,
+          onTap: _busy ? null : () => _run(() => TableService.dismissLocals(me)),
+        ),
+      ]),
     );
   }
 
@@ -480,7 +489,7 @@ class _TableTabState extends State<TableTab> {
               stream: PartyService.watchParty(_party!),
               builder: (context, pSnap) => StreamBuilder<Map<String, dynamic>>(
               stream: ItemService.watchUserFields(
-                  me, const ['pos', 'shield', 'busyUntil', 'searchReadyAt', 'wildEncounter', 'inventory']),
+                  me, const ['pos', 'shield', 'busyUntil', 'searchReadyAt', 'wildEncounter', 'inventory', 'localsInfo']),
               builder: (context, uSnap) {
                 final pos = uSnap.data?['pos'] as Map?;
                 _shield = ItemService.shieldZone(uSnap.data);
@@ -492,6 +501,7 @@ class _TableTabState extends State<TableTab> {
                 }
                 final myTurn = st?['order'] is List && List<String>.from(st!['order'] as List)[_i(st['idx'])] == me;
                 final wild = uSnap.data?['wildEncounter'] as Map?;
+                final locals = uSnap.data?['localsInfo'] as Map?;
                 return Column(children: [
                   SectionTitle(table ? 'Tavolo' : 'Partita'),
                   if (_master) _masterTools(started, st, events),
@@ -508,6 +518,7 @@ class _TableTabState extends State<TableTab> {
                     if (table && st!['order'] is List) _turnCard(st, me) else if (!table) _clockCard(st!, uSnap.data),
                     _positionCard(pos),
                     if (table && wild != null) _wildCard(wild),
+                    if (table && locals != null) _localsCard(locals, me),
                     ..._eventCards(events, st!, pos, me),
                     SectionTitle(table ? 'Mappa' : 'Zone'),
                     if (table) ...[
@@ -519,6 +530,8 @@ class _TableTabState extends State<TableTab> {
                         pos: pos,
                         shield: _shield,
                         myTurn: myTurn,
+                        actionsLeft: _i(st['actionsLeft']),
+                        wildPending: wild != null,
                         ticketCount: ItemService.readInventory(uSnap.data)['biglietto'] ?? 0,
                         busy: _busy,
                         onMove: _moveTo,
@@ -544,6 +557,29 @@ class _TableTabState extends State<TableTab> {
       label: 'Master',
       labelOnTop: true,
       child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+        // fuori dalla parte comprimibile: è l'unico strumento che si usa spesso durante la partita
+        if (kTableMode && started) ...[
+          DropButton(
+            label: 'Informazioni dai locali',
+            icon: Icons.record_voice_over,
+            colors: Pal.gold,
+            height: 44,
+            onTap: _busy ? null : () => _askLocals(st!),
+          ),
+          const SizedBox(height: 4),
+        ],
+        Material(
+          type: MaterialType.transparency,
+          child: ListTile(
+            dense: true,
+            contentPadding: EdgeInsets.zero,
+            title: Text(_masterOpen ? 'Nascondi strumenti del Master' : 'Strumenti del Master',
+                style: const TextStyle(fontWeight: FontWeight.w800)),
+            trailing: Icon(_masterOpen ? Icons.expand_less : Icons.expand_more),
+            onTap: () => setState(() => _masterOpen = !_masterOpen),
+          ),
+        ),
+        if (_masterOpen) ...[
         const Text(
           'Solo per preparare la partita: dopo l’avvio tutti giocano alla pari.',
           style: TextStyle(color: Pal.sub, fontSize: 12),
@@ -613,16 +649,6 @@ class _TableTabState extends State<TableTab> {
             height: 44,
             onTap: _busy ? null : () => _editSectors(st),
           ),
-          if (started) ...[
-            const SizedBox(height: 8),
-            DropButton(
-              label: 'Informazioni dai locali',
-              icon: Icons.record_voice_over,
-              colors: Pal.gold,
-              height: 44,
-              onTap: _busy ? null : () => _askLocals(st!),
-            ),
-          ],
         ] else
           _liveMasterTools(st),
         const SizedBox(height: 12),
@@ -640,6 +666,7 @@ class _TableTabState extends State<TableTab> {
           height: 44,
           onTap: _busy ? null : () => _run(TableService.seedTypesIfMissing, ok: 'Tipi pronti (se mancavano, sono stati creati)'),
         ),
+        ],
       ]),
     );
   }

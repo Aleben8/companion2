@@ -1,5 +1,3 @@
-import 'dart:ui' show PathMetric;
-
 import 'package:flutter/material.dart';
 
 import '../services/table_service.dart';
@@ -10,20 +8,19 @@ import '../widgets/drop.dart';
 
 int _i(dynamic v) => v is num ? v.toInt() : 0;
 
-/// Mappa disegnata del Tavolo: zone in gioco (rettangoli arrotondati) e collegamenti.
-/// La tua zona è evidenziata ("Tu"), sopra le zone raggiungibili c'è il costo in azioni, quelle non
-/// collegate sono tratteggiate (Biglietto / treno / traghetto). Toccando una zona compare il pannello
-/// dei suoi settori e un solo bottone di conferma.
-///
-/// Le posizioni delle zone sono in `kZoneMapPos` (lib/table/zones.dart): per usare l'immagine del
-/// tabellone basta metterla come sfondo dello Stack in [_board] e regolare quelle coordinate.
+/// Mappa del Tavolo a pulsanti: un pulsante per ogni zona in gioco, con le miniature dei suoi settori
+/// (tipo di settore, settori bloccati, dove sei tu, dove è il leggendario).
+/// Le zone dove puoi andare adesso sono colorate, le altre grigie e non si toccano.
+/// Toccando una zona compare il pannello dei settori con un solo bottone di conferma.
 class TableMap extends StatefulWidget {
   final Map<String, dynamic> state;
   final List<Map<String, dynamic>> events; // tutti gli eventi (con 'id')
   final Map? pos;
   final String? shield;
   final bool myTurn;
+  final int actionsLeft;
   final int ticketCount;
+  final bool wildPending; // incontro selvatico da risolvere
   final bool busy;
   final Future<void> Function(ZoneSpec zone, int sector, {required bool ticket, required bool visibleTrace}) onMove;
 
@@ -34,7 +31,9 @@ class TableMap extends StatefulWidget {
     required this.pos,
     required this.shield,
     required this.myTurn,
+    required this.actionsLeft,
     required this.ticketCount,
+    required this.wildPending,
     required this.busy,
     required this.onMove,
   });
@@ -54,112 +53,122 @@ class _TableMapState extends State<TableMap> {
 
   MoveRoute _route(String to) => TableService.routeTo(widget.state, _active, _from, to);
 
+  bool _reachable(String to) =>
+      widget.myTurn &&
+      !widget.wildPending &&
+      TableService.canReach(
+        state: widget.state,
+        events: _active,
+        pos: widget.pos,
+        to: to,
+        actionsLeft: widget.actionsLeft,
+        tickets: widget.ticketCount,
+        shield: widget.shield,
+      );
+
+  String get _hint {
+    if (!widget.myTurn) return 'Non è il tuo turno: le zone sono in grigio.';
+    if (widget.wildPending) return 'Prima affronta o sfuggi al Pokémon selvatico.';
+    if (widget.actionsLeft <= 0) return 'Hai finito le azioni: termina il turno.';
+    return 'Colorate le zone dove puoi andare adesso. Tocca una zona per scegliere il settore.';
+  }
+
   @override
   Widget build(BuildContext context) {
     final zones = TableLayout.zonesInPlay;
-    final selected = _zone ?? _from ?? 'hub';
+    // la zona aperta si chiude se non è più raggiungibile (ad esempio dopo lo spostamento)
+    final open = _zone != null && (_zone == _from || _reachable(_zone!)) ? _zone : null;
     return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-      LayoutBuilder(builder: (context, c) => _board(zones, selected, c.maxWidth)),
-      const SizedBox(height: 10),
-      _sectorPanel(zoneSpec(selected)),
+      Text(_hint, style: const TextStyle(color: Pal.sub, fontSize: 12)),
+      const SizedBox(height: 8),
+      LayoutBuilder(builder: (context, c) {
+        final cols = c.maxWidth >= 640 ? 3 : 2;
+        const gap = 10.0;
+        final w = (c.maxWidth - gap * (cols - 1)) / cols;
+        return Wrap(spacing: gap, runSpacing: gap, children: [
+          for (final z in zones) SizedBox(width: w, child: _zoneButton(z, open == z.id)),
+        ]);
+      }),
+      if (open != null) ...[
+        const SizedBox(height: 12),
+        _sectorPanel(zoneSpec(open)),
+      ],
     ]);
   }
 
-  // ------------------------------------------------------------------ mappa
+  // ------------------------------------------------------------ pulsanti zona
 
-  Widget _board(List<ZoneSpec> zones, String selected, double w) {
-    final h = (w * 1.2).clamp(420.0, 640.0);
-    final boxW = (w * 0.27).clamp(84.0, 150.0);
-    const boxH = 54.0;
-    Offset center(String id) {
-      final p = kZoneMapPos[id] ?? (0.5, 0.5);
-      return Offset(boxW / 2 + p.$1 * (w - boxW), boxH / 2 + 14 + p.$2 * (h - boxH - 20));
-    }
-
-    final links = TableService.linksOf(widget.state);
-    final segments = <(Offset, Offset, bool)>[];
-    for (var i = 0; i < zones.length; i++) {
-      for (var j = i + 1; j < zones.length; j++) {
-        if (!links.contains(TableService.linkKey(zones[i].id, zones[j].id))) continue;
-        final fromMine = zones[i].id == _from || zones[j].id == _from;
-        segments.add((center(zones[i].id), center(zones[j].id), fromMine));
-      }
-    }
-    return Container(
-      height: h,
-      decoration: BoxDecoration(
-        color: const Color(0xFFEFF3EC),
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: Pal.line, width: 2),
-      ),
-      child: Stack(clipBehavior: Clip.none, children: [
-        Positioned.fill(child: CustomPaint(painter: _LinksPainter(segments))),
-        for (final z in zones)
-          Positioned(
-            left: center(z.id).dx - boxW / 2,
-            top: center(z.id).dy - boxH / 2,
-            width: boxW,
-            height: boxH,
-            child: _zoneBox(z, selected == z.id),
-          ),
-      ]),
-    );
-  }
-
-  Widget _zoneBox(ZoneSpec z, bool selected) {
+  Widget _zoneButton(ZoneSpec z, bool selected) {
     final mine = _from == z.id;
-    final route = _route(z.id);
-    final linked = mine || route == MoveRoute.direct;
-    final colors = typeColors(z.type);
+    final reachable = _reachable(z.id);
+    final colored = reachable || mine;
+    final colors = colored ? typeColors(z.type) : const [Color(0xFFB7BCC4), Color(0xFFD5D9DE)];
     final hasEvent = _active.any((e) => e['zone'] == z.id);
-    final legendary = _active.any((e) => e['zone'] == z.id && e['legendary'] == true && e['defeatedBy'] == null);
-    // etichetta sopra la zona: costo a piedi, oppure il mezzo per arrivarci
+    final legendaryEv = _active.any((e) => e['zone'] == z.id && e['legendary'] == true && e['defeatedBy'] == null);
+    final route = _route(z.id);
     String? tag;
-    if (!mine && _from != null) {
+    if (mine) {
+      tag = 'Tu';
+    } else if (_from != null) {
       tag = switch (route) {
         MoveRoute.direct => '${TableService.moveCost(_active, _from, z.id, shield: widget.shield)} az.',
         MoveRoute.passage => 'Treno/traghetto',
         MoveRoute.ticket => 'Biglietto',
       };
     }
-    final box = Container(
-      alignment: Alignment.center,
-      padding: const EdgeInsets.symmetric(horizontal: 6),
-      decoration: BoxDecoration(
-        gradient: LinearGradient(colors: [lighten(colors.first, mine ? 0.15 : 0.55), lighten(colors.last, mine ? 0.3 : 0.7)]),
-        borderRadius: BorderRadius.circular(14),
-        border: linked ? Border.all(color: selected ? Pal.ink : colors.first, width: selected ? 3 : 1.5) : null,
-        boxShadow: mine ? [BoxShadow(color: colors.first.withOpacity(0.45), blurRadius: 12)] : null,
-      ),
-      child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [
-        if (hasEvent)
-          Padding(
-            padding: const EdgeInsets.only(right: 4),
-            child: Icon(legendary ? Icons.bolt : Icons.warning_amber_rounded, size: 16, color: Pal.bad),
-          ),
-        Flexible(
-          child: Text(
-            z.name,
-            textAlign: TextAlign.center,
-            maxLines: 2,
-            overflow: TextOverflow.ellipsis,
-            style: TextStyle(fontSize: 11.5, fontWeight: FontWeight.w800, color: mine ? Colors.white : Pal.ink, height: 1.1),
-          ),
-        ),
-      ]),
-    );
+    final blocked = TableService.blockedSectors(_active, z.id, shield: widget.shield);
+    final legendarySectors = {
+      for (final e in _active)
+        if (e['zone'] == z.id && e['legendary'] == true && e['sector'] != null) _i(e['sector']),
+    };
+    final fg = colored ? Colors.white : const Color(0xFF6B717A);
     return GestureDetector(
-      onTap: () => setState(() {
-        _zone = z.id;
-        _sector = null;
-      }),
-      child: Stack(clipBehavior: Clip.none, children: [
-        Positioned.fill(
-          child: linked ? box : CustomPaint(foregroundPainter: _DashedBorder(selected ? Pal.ink : Pal.sub, selected ? 2.5 : 1.5), child: box),
+      onTap: colored
+          ? () => setState(() {
+                _zone = selected ? null : z.id;
+                _sector = null;
+              })
+          : null,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 160),
+        padding: const EdgeInsets.fromLTRB(10, 8, 10, 10),
+        decoration: BoxDecoration(
+          gradient: LinearGradient(colors: colors, begin: Alignment.topLeft, end: Alignment.bottomRight),
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: selected ? Pal.ink : Colors.transparent, width: 3),
+          boxShadow: colored ? [BoxShadow(color: colors.first.withOpacity(0.35), blurRadius: 8, offset: const Offset(0, 3))] : null,
         ),
-        if (mine) const Positioned(top: -10, right: -6, child: _Badge('Tu', Pal.accent)),
-        if (tag != null) Positioned(top: -10, left: 6, child: _Badge(tag, linked ? Pal.ok : Pal.sub)),
-      ]),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Row(children: [
+            if (hasEvent)
+              Padding(
+                padding: const EdgeInsets.only(right: 4),
+                child: Icon(legendaryEv ? Icons.bolt : Icons.warning_amber_rounded, size: 16, color: fg),
+              ),
+            Expanded(
+              child: Text(
+                z.name,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(fontSize: 14, fontWeight: FontWeight.w800, color: fg),
+              ),
+            ),
+            if (tag != null) _Badge(tag, mine ? Pal.accent : (colored ? Colors.black26 : Colors.black12), fg),
+          ]),
+          const SizedBox(height: 8),
+          Wrap(spacing: 4, runSpacing: 4, children: [
+            for (var s = 1; s <= z.sectors; s++)
+              _SectorThumb(
+                number: s,
+                type: TableLayout.typeOf(z.id, s),
+                blocked: blocked.contains(s),
+                here: mine && _fromSector == s,
+                legendary: legendarySectors.contains(s),
+                colored: colored,
+              ),
+          ]),
+        ]),
+      ),
     );
   }
 
@@ -178,25 +187,14 @@ class _TableMapState extends State<TableMap> {
     final sector = travel ? arrival : _sector;
     final type = sector == null ? null : TableLayout.typeOf(z.id, sector);
     final colors = typeColors(z.type);
+    int cost(int s) => TableService.moveCost(_active, _from, z.id, shield: widget.shield, sector: s);
+    bool selectable(int s) =>
+        !travel && !blocked.contains(s) && !(z.id == _from && s == _fromSector) && cost(s) <= widget.actionsLeft;
 
     String? problem;
     if (!widget.myTurn) problem = 'Non è il tuo turno';
-    if (problem == null && travel) {
-      final fromType = _from == null ? null : TableLayout.typeOf(_from!, _fromSector);
-      if (arrival == null) {
-        problem = '${z.name} non ha un settore di passaggio';
-      } else if (fromType != SectorType.passaggio) {
-        final p = _from == null ? null : TableService.arrivalSector(_from!);
-        problem = 'Per ${route == MoveRoute.ticket ? 'il Biglietto' : 'treno o traghetto'} parti dal settore di passaggio'
-            '${p == null ? '' : ' (settore $p)'}';
-      } else if (route == MoveRoute.ticket && widget.ticketCount <= 0) {
-        problem = 'Zona non collegata: serve un Biglietto';
-      }
-    }
     if (problem == null && sector == null) problem = 'Scegli il settore di arrivo';
-    if (problem == null && blocked.contains(sector)) problem = 'Settore bloccato';
-    if (problem == null && z.id == _from && sector == _fromSector) problem = 'Sei già qui';
-    final cost = sector == null ? 0 : TableService.moveCost(_active, _from, z.id, shield: widget.shield, sector: sector);
+    if (problem == null && cost(sector!) > widget.actionsLeft) problem = 'Azioni insufficienti';
 
     return DropCard(
       colors: colors,
@@ -220,7 +218,7 @@ class _TableMapState extends State<TableMap> {
               here: z.id == _from && _fromSector == s,
               blocked: blocked.contains(s),
               legendary: legendarySector.contains(s),
-              enabled: !travel && !blocked.contains(s),
+              enabled: selectable(s),
             ),
         ]),
         if (type != null) ...[
@@ -243,7 +241,7 @@ class _TableMapState extends State<TableMap> {
         ),
         DropButton(
           label: problem ??
-              'Vai: ${z.name}, settore $sector · $cost ${cost == 1 ? 'azione' : 'azioni'}'
+              'Vai: ${z.name}, settore $sector · ${cost(sector!)} ${cost(sector) == 1 ? 'azione' : 'azioni'}'
                   '${route == MoveRoute.ticket && travel ? ' + Biglietto' : ''}',
           icon: problem == null ? Icons.directions_walk : null,
           colors: colors,
@@ -253,7 +251,12 @@ class _TableMapState extends State<TableMap> {
               ? null
               : () async {
                   await widget.onMove(z, sector!, ticket: travel && route == MoveRoute.ticket, visibleTrace: _visible);
-                  if (mounted) setState(() => _sector = null);
+                  if (mounted) {
+                    setState(() {
+                      _sector = null;
+                      _zone = null;
+                    });
+                  }
                 },
         ),
       ]),
@@ -264,25 +267,26 @@ class _TableMapState extends State<TableMap> {
       {required bool selected, required bool here, required bool blocked, required bool legendary, required bool enabled}) {
     final type = TableLayout.typeOf(z.id, s);
     final colors = typeColors(z.type);
+    final grey = !enabled && !selected;
     return GestureDetector(
       onTap: enabled ? () => setState(() => _sector = s) : null,
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 180),
         padding: const EdgeInsets.fromLTRB(8, 6, 10, 6),
         decoration: BoxDecoration(
-          color: blocked ? Pal.line : (selected ? colors.first : Colors.white),
+          color: grey ? Pal.line : (selected ? colors.first : Colors.white),
           borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: selected ? Pal.ink : (blocked ? Pal.sub : colors.first), width: selected ? 2.5 : 1.5),
+          border: Border.all(color: selected ? Pal.ink : (grey ? Pal.sub : colors.first), width: selected ? 2.5 : 1.5),
         ),
         child: Row(mainAxisSize: MainAxisSize.min, children: [
-          Icon(blocked ? Icons.block : (type?.icon ?? Icons.place), size: 18, color: selected ? Colors.white : (blocked ? Pal.sub : colors.first)),
+          Icon(blocked ? Icons.block : (type?.icon ?? Icons.place), size: 18, color: selected ? Colors.white : (grey ? Pal.sub : colors.first)),
           const SizedBox(width: 6),
           Text(
             '$s · ${blocked ? 'bloccato' : (type?.label ?? '')}${here ? ' · Tu' : ''}${legendary ? ' · ⚡' : ''}',
             style: TextStyle(
               fontSize: 12,
               fontWeight: FontWeight.w700,
-              color: selected ? Colors.white : Pal.ink,
+              color: selected ? Colors.white : (grey ? Pal.sub : Pal.ink),
               decoration: blocked ? TextDecoration.lineThrough : null,
             ),
           ),
@@ -292,61 +296,54 @@ class _TableMapState extends State<TableMap> {
   }
 }
 
+/// Miniatura di un settore sul pulsante della zona: icona del tipo e numero.
+class _SectorThumb extends StatelessWidget {
+  final int number;
+  final SectorType? type;
+  final bool blocked, here, legendary, colored;
+  const _SectorThumb({
+    required this.number,
+    required this.type,
+    required this.blocked,
+    required this.here,
+    required this.legendary,
+    required this.colored,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final ink = colored ? Pal.ink : const Color(0xFF7A8088);
+    return Tooltip(
+      message: '$number · ${blocked ? 'bloccato' : (type?.label ?? '')}${here ? ' · sei qui' : ''}',
+      child: Container(
+        width: 34,
+        height: 34,
+        decoration: BoxDecoration(
+          color: blocked ? Colors.black26 : Colors.white.withOpacity(colored ? 0.92 : 0.6),
+          borderRadius: BorderRadius.circular(9),
+          border: here ? Border.all(color: Pal.accent, width: 2.5) : null,
+        ),
+        child: Stack(children: [
+          Center(child: Icon(blocked ? Icons.block : (legendary ? Icons.bolt : (type?.icon ?? Icons.place)), size: 18, color: ink)),
+          Positioned(
+            right: 3,
+            bottom: 1,
+            child: Text('$number', style: TextStyle(fontSize: 9, fontWeight: FontWeight.w800, color: ink)),
+          ),
+        ]),
+      ),
+    );
+  }
+}
+
 class _Badge extends StatelessWidget {
   final String text;
-  final Color color;
-  const _Badge(this.text, this.color);
+  final Color color, fg;
+  const _Badge(this.text, this.color, this.fg);
   @override
   Widget build(BuildContext context) => Container(
         padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
         decoration: BoxDecoration(color: color, borderRadius: BorderRadius.circular(8)),
-        child: Text(text, style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.w800)),
+        child: Text(text, style: TextStyle(color: fg, fontSize: 10, fontWeight: FontWeight.w800)),
       );
-}
-
-/// Linee dei collegamenti tra le zone (più marcate quelle che partono dalla tua zona).
-class _LinksPainter extends CustomPainter {
-  final List<(Offset, Offset, bool)> segments;
-  _LinksPainter(this.segments);
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    for (final (a, b, mine) in segments) {
-      canvas.drawLine(
-        a,
-        b,
-        Paint()
-          ..color = mine ? Pal.accent : Pal.sub.withOpacity(0.45)
-          ..strokeWidth = mine ? 3.5 : 2
-          ..strokeCap = StrokeCap.round,
-      );
-    }
-  }
-
-  @override
-  bool shouldRepaint(_LinksPainter old) => old.segments != segments;
-}
-
-/// Bordo tratteggiato per le zone non collegate.
-class _DashedBorder extends CustomPainter {
-  final Color color;
-  final double width;
-  _DashedBorder(this.color, this.width);
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final path = Path()..addRRect(RRect.fromRectAndRadius(Offset.zero & size, const Radius.circular(14)));
-    final paint = Paint()
-      ..color = color
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = width;
-    for (final PathMetric m in path.computeMetrics()) {
-      for (double d = 0; d < m.length; d += 9) {
-        canvas.drawPath(m.extractPath(d, (d + 5).clamp(0, m.length)), paint);
-      }
-    }
-  }
-
-  @override
-  bool shouldRepaint(_DashedBorder old) => old.color != color || old.width != width;
 }

@@ -111,15 +111,3 @@ class TableLayout {
       {for (final e in l.entries) e.key: [for (final t in e.value) t.name]};
 }
 
-/// Posizione delle zone sulla mappa disegnata della tab Tavolo (0..1 in orizzontale e verticale).
-/// Ricavata dai collegamenti di [kDefaultLinks]: spostale per farla somigliare al tuo tabellone.
-const Map<String, (double, double)> kZoneMapPos = {
-  'colline': (0.42, 0.08),
-  'canyon': (0.80, 0.22),
-  'giungla': (0.17, 0.30),
-  'hub': (0.50, 0.48),
-  'vulcano': (0.11, 0.60),
-  'isola': (0.84, 0.62),
-  'neve': (0.32, 0.86),
-  'campi': (0.72, 0.88),
-};
