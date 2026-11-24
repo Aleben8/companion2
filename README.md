@@ -166,10 +166,13 @@ Tab **Party**, scheda "Indizi sulla mappa" (piazzamento, indizi trovati e dichia
 tab **Tavolo > Mappa** (tavolo) oppure tab **Mappa** (dal vivo). Funziona uguale nelle due modalità; cambia solo il modo di indicare il luogo.
 
 1. **Apertura (Master).** Chi ha `isMaster: true` preme "Apri il piazzamento degli indizi": a ogni giocatore viene assegnato a caso un
-   **simbolo** (▲ ● ■ ◆ ★ ✚ ☾ ❖ ♥ ♣) e gli eventuali indizi precedenti vengono cancellati.
+   **simbolo** (▲ ● ■ ◆ ★ ✚ ☾ ❖ ♥ ♣) e gli eventuali indizi precedenti vengono cancellati. Lo stesso succede da solo quando il
+   Master **riavvia la partita**: tutti ridispongono i loro indizi e la ricerca riparte quando il Master chiude il piazzamento.
+   Al primo avvio al tavolo deve rifarli solo chi li aveva messi in un bioma rimasto fuori dalla partita.
 2. **Piazzamento.** Ogni giocatore sceglie a chi assegnare i suoi **3 indizi**, scrive il testo di ciascuno (max 90 caratteri) e
    li nasconde: al tavolo scegliendo zona e settore, dal vivo premendo "Piazza qui (GPS)" nel punto in cui si trova.
-   Finché il piazzamento è aperto può modificarli. Gli indizi sono identificati da simbolo + numero (▲1, ▲2, ▲3), come le carte sul tavolo.
+   Finché il piazzamento è aperto può modificarli ("Modifica" riparte da quelli già messi). Durante tutta la partita la scheda
+   mostra a chi li ha piazzati testo, destinatario e **dove** li ha nascosti (zona e settore, o coordinate dal vivo). Gli indizi sono identificati da simbolo + numero (▲1, ▲2, ▲3), come le carte sul tavolo.
 3. **Chiusura (Master).** "Chiudi il piazzamento e inizia" (avvisa se non tutti sono pronti).
 4. **Ricerca.** "Cerca indizi qui": al tavolo cerca nel tuo settore e **costa 1 azione** (anche se non trovi nulla, e solo nel tuo turno),
    dal vivo entro **10 m** (`kClueRadiusMeters` in `lib/services/clue_service.dart`: il GPS sbaglia di qualche metro, se la ricerca

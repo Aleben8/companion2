@@ -10,6 +10,7 @@ import '../table/sectors.dart';
 import '../table/type_chart.dart';
 import '../table/zones.dart';
 import 'battle_service.dart';
+import 'clue_service.dart';
 import 'gym_service.dart';
 import 'item_service.dart';
 import 'live_service.dart';
@@ -113,7 +114,15 @@ class TableService {
     final links = await partyLinks(party);
     final minutes = await roundMinutes(party);
 
+    final wasStarted = (await stateRef(party).get()).data()?['started'] == true;
     final batch = _db.batch();
+    // indizi: al riavvio tutti li ridispongono (simboli nuovi); al primo avvio al tavolo solo chi li
+    // aveva messi in un bioma rimasto fuori dalla partita
+    if (wasStarted) {
+      await ClueService.resetPlacement(batch, party, order);
+    } else if (inPlay != null) {
+      await ClueService.dropOutOfPlay(batch, party, inPlay.toSet());
+    }
     for (final d in (await eventsCol(party).get()).docs) {
       batch.delete(d.reference);
     }

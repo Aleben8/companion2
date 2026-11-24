@@ -35,6 +35,7 @@ class _CluesCardState extends State<CluesCard> {
   String? _target;
   final _ctrls = List.generate(kCluesPerPlayer, (_) => TextEditingController());
   final List<Map<String, dynamic>?> _places = List.filled(kCluesPerPlayer, null);
+  String? _round; // piazzamento in corso (Party/players.cluePlacement): se cambia, il modulo si svuota
 
   @override
   void initState() {
@@ -197,11 +198,42 @@ class _CluesCardState extends State<CluesCard> {
         ],
       ];
 
+  /// "Modifica": il modulo riparte dagli indizi già piazzati.
+  void _edit(List<Map<String, dynamic>> mineClues) => setState(() {
+        _editing = true;
+        _target = mineClues.isEmpty ? _target : mineClues.first['targetUid'] as String?;
+        for (var i = 0; i < kCluesPerPlayer; i++) {
+          final c = i < mineClues.length ? mineClues[i] : null;
+          _ctrls[i].text = '${c?['text'] ?? ''}';
+          _places[i] = c?['place'] is Map ? Map<String, dynamic>.from(c!['place'] as Map) : null;
+        }
+      });
+
+  /// Nuovo piazzamento (partita riavviata o riaperto dal Master): via i dati del giro prima.
+  void _resetFormIfNew(String key) {
+    if (_round == key) return;
+    final first = _round == null;
+    _round = key;
+    if (first) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      setState(() {
+        _editing = false;
+        _target = null;
+        for (final c in _ctrls) {
+          c.clear();
+        }
+        _places.fillRange(0, kCluesPerPlayer, null);
+      });
+    });
+  }
+
   List<Widget> _placing(List<Map<String, dynamic>> clues, List<QueryDocumentSnapshot<Map<String, dynamic>>> players, Map<String, dynamic>? mine, int ready) {
     final symbol = (mine?['symbol'] ?? '?').toString();
     final isReady = mine?['cluesReady'] == true;
     final mineClues = clues.where((c) => c['ownerUid'] == widget.uid).toList()
       ..sort((a, b) => ((a['number'] as num?) ?? 0).compareTo((b['number'] as num?) ?? 0));
+    if (!isReady && mineClues.isEmpty) _resetFormIfNew('${mine?['cluePlacement']}');
     final others = players.where((d) => d.id != widget.uid).toList();
     return [
       Row(children: [
@@ -217,7 +249,7 @@ class _CluesCardState extends State<CluesCard> {
         for (final c in mineClues)
           Padding(
             padding: const EdgeInsets.only(bottom: 6),
-            child: Text('$symbol${c['number']} · ${c['text']}\n    📍 ${_placeLabel(c['place'] as Map?)}', style: const TextStyle(height: 1.3)),
+            child: _myClue(symbol, c),
           ),
         const SizedBox(height: 6),
         DropButton(
@@ -225,7 +257,7 @@ class _CluesCardState extends State<CluesCard> {
           icon: Icons.edit,
           colors: Pal.neutral,
           height: 44,
-          onTap: () => setState(() => _editing = true),
+          onTap: () => _edit(mineClues),
         ),
       ] else ...[
         const Text(
@@ -304,6 +336,13 @@ class _CluesCardState extends State<CluesCard> {
     ];
   }
 
+  /// Un tuo indizio: testo, per chi è e dove l'hai nascosto (lo vedi solo tu).
+  Widget _myClue(String symbol, Map<String, dynamic> c) => Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Text('$symbol${c['number']} · ${c['text']}', style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700)),
+        Text('📍 ${_placeLabel(c['place'] as Map?)}  ·  per ${c['targetUid']}',
+            style: const TextStyle(fontSize: 12, color: Pal.sub)),
+      ]);
+
   List<Widget> _playing(List<Map<String, dynamic>> clues, Map<String, dynamic>? mine) {
     final symbol = (mine?['symbol'] ?? '?').toString();
     final placedByMe = clues.where((c) => c['ownerUid'] == widget.uid).toList()
@@ -366,12 +405,15 @@ class _CluesCardState extends State<CluesCard> {
       const Divider(color: Pal.line),
       Text('I tuoi indizi nascosti ($symbol)', style: const TextStyle(fontWeight: FontWeight.w800)),
       const SizedBox(height: 6),
+      if (placedByMe.isEmpty)
+        const Text('Non hai nascosto indizi in questa partita.', style: TextStyle(color: Pal.sub, fontSize: 12)),
       for (final c in placedByMe)
         Padding(
-          padding: const EdgeInsets.only(bottom: 4),
-          child: Row(children: [
-            Expanded(child: Text('$symbol${c['number']} · ${c['text']}', style: const TextStyle(fontSize: 13))),
-            InfoChip(c['status'] == 'found' ? 'Trovato' : 'Nascosto', color: c['status'] == 'found' ? Pal.warn : Pal.sub),
+          padding: const EdgeInsets.only(bottom: 8),
+          child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Expanded(child: _myClue(symbol, c)),
+            InfoChip(c['status'] == 'found' ? 'Trovato' : 'Nascosto',
+                color: c['status'] == 'found' ? Pal.warn : Pal.sub),
           ]),
         ),
     ];

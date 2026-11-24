@@ -96,7 +96,7 @@ class _TableTabState extends State<TableTab> {
     final go = await _confirm(
       started ? 'Riavvia la partita' : 'Avvia la partita',
       started
-          ? 'Giro, posizioni, trappole ed eventi ripartono da zero (strumenti e badge restano).'
+          ? 'Giro, posizioni, trappole, eventi e indizi ripartono da zero: ognuno ridispone i suoi indizi (strumenti e badge restano).'
           : 'Parte l’orologio dei giri (uno ogni ${await TableService.roundMinutes(_party!)} minuti) e vengono '
               'pianificati gli eventi di zona. La zona di ognuno la decide il GPS.',
       started ? 'Riavvia' : 'Avvia',
@@ -126,7 +126,7 @@ class _TableTabState extends State<TableTab> {
             child: ListView(shrinkWrap: true, children: [
               Text(
                 '$players giocatori: l’Hub più ${min(7, players + 1)} biomi estratti a caso. Puoi cambiarli. '
-                '${started ? 'Giro, posizioni, trappole ed eventi ripartono da zero (strumenti e badge restano). ' : ''}'
+                '${started ? 'Giro, posizioni, trappole, eventi e indizi ripartono da zero: ognuno ridispone i suoi indizi (strumenti e badge restano). ' : ''}'
                 'Tutti partono dall’Hub e l’ordine dei turni è sorteggiato.',
                 style: const TextStyle(fontSize: 12, color: Pal.sub),
               ),

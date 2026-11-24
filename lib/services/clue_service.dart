@@ -55,20 +55,47 @@ class ClueService {
   static Future<void> openPlacement(String party) async {
     final players = await PartyService.players(party).get();
     if (players.docs.length < 2) throw Exception('Servono almeno 2 giocatori nel party');
-    final ids = players.docs.map((d) => d.id).toList()..shuffle(_rnd);
     final batch = _db.batch();
+    await resetPlacement(batch, party, players.docs.map((d) => d.id).toList());
+    await batch.commit();
+  }
+
+  /// Aggiunge a [batch] la riapertura del piazzamento: cancella tutti gli indizi, nuovi simboli e
+  /// tutti "non pronti". La usa anche il (ri)avvio della partita, così ognuno li ridispone.
+  static Future<void> resetPlacement(WriteBatch batch, String party, List<String> players) async {
+    final ids = [...players]..shuffle(_rnd);
+    final placement = DateTime.now().millisecondsSinceEpoch; // identifica questo piazzamento
     for (final d in (await clues(party).get()).docs) {
       batch.delete(d.reference);
     }
     for (var i = 0; i < ids.length; i++) {
       batch.set(
         PartyService.players(party).doc(ids[i]),
-        {'symbol': symbolFor(i), 'cluesReady': false},
+        {'symbol': symbolFor(i), 'cluesReady': false, 'cluePlacement': placement},
         SetOptions(merge: true),
       );
     }
     batch.set(PartyService.party(party), {'cluePhase': 'placing'}, SetOptions(merge: true));
-    await batch.commit();
+  }
+
+  /// Al primo avvio al tavolo: chi ha nascosto un indizio in un bioma che non è in gioco deve
+  /// ridisporre i suoi (vengono cancellati e il piazzamento si riapre). Restituisce chi deve rifarli.
+  static Future<List<String>> dropOutOfPlay(WriteBatch batch, String party, Set<String> inPlay) async {
+    final redo = <String>{};
+    final all = (await clues(party).get()).docs;
+    for (final d in all) {
+      final z = (d.data()['place'] as Map?)?['zone'];
+      if (z != null && !inPlay.contains(z)) redo.add('${d.data()['ownerUid']}');
+    }
+    if (redo.isEmpty) return const [];
+    for (final d in all) {
+      if (redo.contains(d.data()['ownerUid'])) batch.delete(d.reference);
+    }
+    for (final uid in redo) {
+      batch.set(PartyService.players(party).doc(uid), {'cluesReady': false}, SetOptions(merge: true));
+    }
+    batch.set(PartyService.party(party), {'cluePhase': 'placing'}, SetOptions(merge: true));
+    return redo.toList();
   }
 
   /// Chiude il piazzamento: da qui gli indizi si possono cercare.
