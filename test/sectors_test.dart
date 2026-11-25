@@ -69,4 +69,23 @@ void main() {
     expect(TableService.moveCost(events, 'hub', 'canyon', sector: 1), 1);
     expect(TableService.moveCost(events, 'hub', 'canyon', sector: 4), 1 + kImperviousExtraCost);
   });
+
+  test('furtività: CD = base + settore + percezione (Difesa Speciale × 0.5)', () {
+    expect(stealthCd(SectorType.cittadino, 0), kStealthBaseCd - 2);
+    expect(stealthCd(SectorType.rifugio, 10), kStealthBaseCd + 2 + 5);
+    expect(stealthCd(SectorType.passaggio, 15), kStealthBaseCd + 1 + 7);
+    expect(dexterityBonus(15), 7); // Velocità × 0.5
+    expect(dexterityBonus(0), 0);
+  });
+
+  test('Biglietto: dalla zona isolata si torna gratis alla zona di partenza', () {
+    final pos = {'zone': 'vulcano', 'sector': TableService.arrivalSector('vulcano')};
+    bool reach(String to, String? free) => TableService.canReach(
+        state: null, events: const [], pos: pos, to: to, actionsLeft: 2, tickets: 0, freeReturn: free);
+    expect(TableService.freeReturnZone({'from': 'hub', 'at': 'vulcano'}, pos), 'hub');
+    expect(TableService.freeReturnZone({'from': 'hub', 'at': 'neve'}, pos), isNull);
+    expect(reach('hub', null), isFalse); // non collegata e senza Biglietti
+    expect(reach('hub', 'hub'), isTrue); // ritorno gratis
+    expect(reach('canyon', 'hub'), isFalse); // il ritorno vale solo verso la zona di partenza
+  });
 }

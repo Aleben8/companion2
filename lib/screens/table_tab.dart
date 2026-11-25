@@ -18,6 +18,8 @@ import '../items.dart';
 import '../table/events.dart';
 import '../table/sectors.dart';
 import '../table/zones.dart';
+import 'shop_sheet.dart';
+import 'here_sectors.dart';
 import 'table_map.dart';
 import '../theme.dart';
 import '../widgets/clue_search.dart';
@@ -315,6 +317,76 @@ class _TableTabState extends State<TableTab> {
     );
   }
 
+  /// Qualcuno nel settore ti ha notato entrando (è già stato avvisato): elùdilo con un'azione o una Fune di fuga.
+  Widget _spottedCard(Map sp, int ropes) {
+    final z = zoneSpec('${sp['zone']}');
+    return DropCard(
+      colors: const [Color(0xFF5B6B8C), Color(0xFF9AA8C7)],
+      label: 'Ti hanno notato!',
+      labelOnTop: true,
+      child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+        Text('Entrando in ${z.name}, settore ${sp['sector']}, qualcuno ti ha visto.',
+            style: const TextStyle(fontWeight: FontWeight.w700)),
+        Text('Tiro ${sp['roll']} + destrezza = ${sp['total']}, serviva ${sp['cd']}.',
+            style: const TextStyle(color: Pal.sub, fontSize: 12)),
+        const SizedBox(height: 6),
+        const Text(
+          'Chi è nel settore è stato avvisato. Per eluderlo usa $kEludeCost azione oppure una Fune di fuga.',
+          style: TextStyle(fontSize: 12),
+        ),
+        const SizedBox(height: 10),
+        Row(children: [
+          Expanded(
+            child: DropButton(
+              label: 'Eludi ($kEludeCost azione)',
+              icon: Icons.directions_run,
+              height: 44,
+              onTap: _busy ? null : () => _run(() => TableService.elude(_party!, _s.userName!), ok: 'Ti sei allontanato'),
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: DropButton(
+              label: 'Fune di fuga ×$ropes',
+              icon: Icons.logout,
+              colors: Pal.neutral,
+              height: 44,
+              onTap: _busy || ropes <= 0
+                  ? null
+                  : () => _run(() => TableService.elude(_party!, _s.userName!, rope: true), ok: 'Ti sei allontanato con la Fune di fuga'),
+            ),
+          ),
+        ]),
+      ]),
+    );
+  }
+
+  /// Chi hai notato entrare nel tuo settore (questo giro e il precedente). Resta visibile anche se
+  /// l'avviso a comparsa è passato mentre la app era chiusa.
+  Widget _sightings(String me, int round) => StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+        stream: TableService.watchSightings(_party!, me),
+        builder: (context, snap) {
+          final rows = [
+            for (final d in snap.data?.docs ?? <QueryDocumentSnapshot<Map<String, dynamic>>>[])
+              if (d.data()['type'] == 'spotted' && _i(d.data()['round']) >= round - 1) d.data(),
+          ]..sort((a, b) => _i(b['round']).compareTo(_i(a['round'])));
+          if (rows.isEmpty) return const SizedBox.shrink();
+          return DropCard(
+            colors: const [Color(0xFF5B6B8C), Color(0xFF9AA8C7)],
+            label: 'Avvistamenti',
+            labelOnTop: true,
+            child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+              for (final r in rows.take(4))
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 4),
+                  child: Text('👀 ${r['uid']} è entrato nel tuo settore '
+                      '(${zoneSpec('${r['zone']}').name}, settore ${r['sector']}) · giro ${r['round']}'),
+                ),
+            ]),
+          );
+        },
+      );
+
   /// Incontro selvatico (settore selvaggio): affrontarlo o fuggire.
   Future<void> _wild(bool fight) => _run(() async {
         if (fight) {
@@ -489,7 +561,7 @@ class _TableTabState extends State<TableTab> {
               stream: PartyService.watchParty(_party!),
               builder: (context, pSnap) => StreamBuilder<Map<String, dynamic>>(
               stream: ItemService.watchUserFields(
-                  me, const ['pos', 'shield', 'busyUntil', 'searchReadyAt', 'wildEncounter', 'inventory', 'localsInfo']),
+                  me, const ['pos', 'shield', 'busyUntil', 'searchReadyAt', 'wildEncounter', 'spotted', 'inventory', 'localsInfo', 'ticketReturn']),
               builder: (context, uSnap) {
                 final pos = uSnap.data?['pos'] as Map?;
                 _shield = ItemService.shieldZone(uSnap.data);
@@ -502,9 +574,12 @@ class _TableTabState extends State<TableTab> {
                 final myTurn = st?['order'] is List && List<String>.from(st!['order'] as List)[_i(st['idx'])] == me;
                 final wild = uSnap.data?['wildEncounter'] as Map?;
                 final locals = uSnap.data?['localsInfo'] as Map?;
+                final spotted = uSnap.data?['spotted'] as Map?;
+                final ropes = ItemService.readInventory(uSnap.data)['fune'] ?? 0;
                 return Column(children: [
                   SectionTitle(table ? 'Tavolo' : 'Partita'),
-                  if (_master) _masterTools(started, st, events),
+                  // al tavolo gli strumenti del Master stanno in fondo (prima dell'avvio restano in cima)
+                  if (_master && (!table || !started)) _masterTools(started, st, events),
                   if (!started)
                     const Padding(
                       padding: EdgeInsets.all(24),
@@ -516,28 +591,35 @@ class _TableTabState extends State<TableTab> {
                     )
                   else ...[
                     if (table && st!['order'] is List) _turnCard(st, me) else if (!table) _clockCard(st!, uSnap.data),
-                    _positionCard(pos),
+                    // prima quello che va risolto subito, poi dove sei e cosa puoi fare
+                    if (table && spotted != null) _spottedCard(spotted, ropes),
                     if (table && wild != null) _wildCard(wild),
                     if (table && locals != null) _localsCard(locals, me),
-                    ..._eventCards(events, st!, pos, me),
-                    SectionTitle(table ? 'Mappa' : 'Zone'),
+                    if (table) _sightings(me, _i(st!['round'])),
+                    if (table)
+                      _positionCard(pos, st: st, events: events, me: me, myTurn: myTurn, pending: wild != null || spotted != null)
+                    else
+                      _positionCard(pos),
+                    // al tavolo gli eventi delle altre zone stanno sui pulsanti della mappa e nella fascia in alto
+                    if (!table) ..._eventCards(events, st!, pos, me),
+                    SectionTitle(table ? 'Altre zone' : 'Zone'),
                     if (table) ...[
-                      ClueSearchButton(party: _party!, uid: me, enabled: myTurn),
-                      const SizedBox(height: 6),
                       TableMap(
-                        state: st,
+                        state: st!,
                         events: events,
                         pos: pos,
                         shield: _shield,
                         myTurn: myTurn,
                         actionsLeft: _i(st['actionsLeft']),
-                        wildPending: wild != null,
+                        wildPending: wild != null || spotted != null,
                         ticketCount: ItemService.readInventory(uSnap.data)['biglietto'] ?? 0,
+                        freeReturn: TableService.freeReturnZone(uSnap.data?['ticketReturn'] as Map?, pos),
                         busy: _busy,
                         onMove: _moveTo,
                       ),
                     ] else
-                      for (final z in kZones) _zoneCard(z, pos, events, st, me),
+                      for (final z in kZones) _zoneCard(z, pos, events, st!, me),
+                    if (_master && table) ...[const SizedBox(height: 16), _masterTools(started, st, events)],
                   ],
                 ]);
               },
@@ -585,7 +667,10 @@ class _TableTabState extends State<TableTab> {
           style: TextStyle(color: Pal.sub, fontSize: 12),
         ),
         const SizedBox(height: 8),
-        SwitchListTile(
+        // Material trasparente: la scheda ha uno sfondo che altrimenti nasconde il tocco (e in debug dà errore)
+        Material(
+          type: MaterialType.transparency,
+          child: SwitchListTile(
           contentPadding: EdgeInsets.zero,
           title: const Text('Eventi di zona manuali', style: TextStyle(fontWeight: FontWeight.w700)),
           subtitle: Text(
@@ -601,6 +686,7 @@ class _TableTabState extends State<TableTab> {
                   ? _run(() => TableService.setEventMode(_party!, manual: v),
                       ok: v ? 'Eventi manuali: li inserisci tu' : 'Eventi automatici ripianificati')
                   : setState(() => _manualNext = v),
+        ),
         ),
         if (started && manual) ...[
           DropButton(
@@ -817,40 +903,99 @@ class _TableTabState extends State<TableTab> {
     );
   }
 
-  Widget _positionCard(Map? pos) {
+  /// "La tua posizione": dove sei, che settore è e tutto quello che puoi fare qui
+  /// (cercare indizi, emporio, eventi della zona con le loro azioni). Per spostarti c'è la mappa sotto.
+  Widget _positionCard(Map? pos,
+      {Map<String, dynamic>? st, List<Map<String, dynamic>> events = const [], String? me, bool myTurn = false, bool pending = false}) {
     final z = pos == null ? null : zoneSpec('${pos['zone']}');
+    final type = kTableMode && z != null ? TableLayout.typeOf(z.id, _i(pos!['sector'])) : null;
+    final table = kTableMode && st != null && me != null;
+    final shopClosed = kTableMode ? tableShopClosedReason(pos) : null;
     return DropCard(
       colors: typeColors(z?.type),
       label: 'La tua posizione',
       labelOnTop: true,
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Text(
-          z == null
-              ? (kTableMode ? 'Non ancora sulla mappa' : 'Fuori dalle zone di gioco')
-              : '${z.name} · ${kTableMode ? 'settore ${pos!['sector']}' : LiveService.sectorLabel(z.id, pos!['sector'])}',
-          style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
-        ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+        Row(children: [
+          if (type != null) ...[Icon(type.icon, size: 26, color: Pal.ink), const SizedBox(width: 8)],
+          Expanded(
+            child: Text(
+              z == null
+                  ? (kTableMode ? 'Non ancora sulla mappa' : 'Fuori dalle zone di gioco')
+                  : '${z.name} · ${kTableMode ? 'settore ${pos!['sector']}' : LiveService.sectorLabel(z.id, pos!['sector'])}',
+              style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
+            ),
+          ),
+        ]),
         if (!kTableMode)
           const Text('La aggiorna il GPS mentre cammini.', style: TextStyle(color: Pal.sub, fontSize: 12))
-        else if (z != null && TableLayout.typeOf(z.id, _i(pos!['sector'])) != null)
-          Builder(builder: (_) {
-            final t = TableLayout.typeOf(z.id, _i(pos['sector']))!;
-            return Padding(
-              padding: const EdgeInsets.only(top: 4),
-              child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                Icon(t.icon, size: 18, color: Pal.sub),
+        else if (type != null)
+          Padding(
+            padding: const EdgeInsets.only(top: 4),
+            child: Text('${type.label}: ${type.rules}', style: const TextStyle(color: Pal.sub, fontSize: 12)),
+          ),
+        if (table && z != null) ...[
+          // eventi della tua zona (con le loro azioni)
+          ..._eventCards(events, st, pos, me, onlyHere: true, inCard: true),
+          const SizedBox(height: 12),
+          HereSectors(
+            party: _party!,
+            me: me,
+            state: st,
+            events: events,
+            pos: pos!,
+            shield: _shield,
+            myTurn: myTurn,
+            actionsLeft: _i(st['actionsLeft']),
+            pending: pending,
+            busy: _busy,
+            onMove: _moveTo,
+          ),
+          const SizedBox(height: 8),
+          Text('Cosa puoi fare nel settore ${pos['sector']}', style: const TextStyle(fontWeight: FontWeight.w800)),
+          ClueSearchButton(party: _party!, uid: me, enabled: myTurn),
+          if (shopClosed == null)
+            DropButton(
+              label: 'Emporio',
+              icon: Icons.storefront,
+              colors: Pal.gold,
+              height: 44,
+              onTap: () => showShop(context, me),
+            )
+          else
+            Padding(
+              padding: const EdgeInsets.only(top: 2),
+              child: Row(children: [
+                const Icon(Icons.storefront, size: 16, color: Pal.sub),
                 const SizedBox(width: 6),
-                Expanded(child: Text('${t.label}: ${t.rules}', style: const TextStyle(color: Pal.sub, fontSize: 12))),
+                Expanded(child: Text('Emporio chiuso qui · $shopClosed', style: const TextStyle(color: Pal.sub, fontSize: 12))),
               ]),
-            );
-          }),
+            ),
+          const SizedBox(height: 8),
+          const Text('Per andare in un’altra zona usa la mappa qui sotto.', style: TextStyle(color: Pal.sub, fontSize: 12)),
+        ] else if (!kTableMode) ...[
+          const SizedBox(height: 10),
+          DropButton(
+            label: 'Emporio',
+            icon: Icons.storefront,
+            colors: Pal.gold,
+            height: 44,
+            onTap: () => showShop(context, _s.userName!),
+          ),
+        ],
       ]),
     );
   }
 
-  List<Widget> _eventCards(List<Map<String, dynamic>> events, Map<String, dynamic> st, Map? pos, String me) {
+  /// Eventi di zona con le loro azioni (prendi uno strumento, sfida il leggendario).
+  /// [onlyHere]: solo quelli della tua zona; [inCard]: riquadri semplici da mettere dentro "La tua posizione".
+  List<Widget> _eventCards(List<Map<String, dynamic>> events, Map<String, dynamic> st, Map? pos, String me,
+      {bool onlyHere = false, bool inCard = false}) {
     final round = _i(st['round']);
-    final shown = events.where((e) => e['status'] == 'announced' || e['status'] == 'active').toList()
+    final shown = events
+        .where((e) => e['status'] == 'announced' || e['status'] == 'active')
+        .where((e) => !onlyHere || e['zone'] == pos?['zone'])
+        .toList()
       ..sort((a, b) => _i(a['startRound']).compareTo(_i(b['startRound'])));
     return [
       for (final e in shown)
@@ -869,12 +1014,11 @@ class _TableTabState extends State<TableTab> {
               : (_i(e['startRound']) >= TableService.kManualStart
                   ? 'Il Master lo attiverà a breve'
                   : (_i(e['startRound']) - round <= 1 ? 'Parte al prossimo giro' : 'Parte tra ${_i(e['startRound']) - round} giri'));
-          return DropCard(
-            colors: typeColors(z.type),
-            label: active ? 'IN CORSO' : 'IN ARRIVO',
-            labelOnTop: true,
-            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Text(title, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w800)),
+          final body = Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              if (inCard)
+                Text(active ? 'EVENTO IN CORSO' : 'EVENTO IN ARRIVO',
+                    style: TextStyle(fontSize: 11, fontWeight: FontWeight.w800, color: active ? Pal.bad : Pal.warn)),
+              Text(title, style: TextStyle(fontSize: inCard ? 16 : 18, fontWeight: FontWeight.w800)),
               Text('${z.name} · $when', style: const TextStyle(color: Pal.sub, fontSize: 12)),
               const SizedBox(height: 8),
               Text(text, style: const TextStyle(height: 1.35)),
@@ -944,7 +1088,24 @@ class _TableTabState extends State<TableTab> {
                   );
                 }),
               ],
-            ]),
+            ]);
+          if (inCard) {
+            return Container(
+              margin: const EdgeInsets.only(top: 8),
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: Colors.white.withOpacity(0.7),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: active ? Pal.bad : Pal.warn, width: 1.5),
+              ),
+              child: body,
+            );
+          }
+          return DropCard(
+            colors: typeColors(z.type),
+            label: active ? 'IN CORSO' : 'IN ARRIVO',
+            labelOnTop: true,
+            child: body,
           );
         }),
     ];

@@ -1,6 +1,7 @@
 import 'dart:math';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:flutter/foundation.dart' show debugPrint;
 
 import '../items.dart';
 import '../mode.dart';
@@ -158,6 +159,8 @@ class TableService {
           'busyUntil': FieldValue.delete(),
           'searchReadyAt': FieldValue.delete(),
           'wildEncounter': FieldValue.delete(),
+          'spotted': FieldValue.delete(),
+          'ticketReturn': FieldValue.delete(),
           'refugeRound': FieldValue.delete(),
           'localsInfo': FieldValue.delete(),
           'trappedSkip': 0,
@@ -697,6 +700,14 @@ class TableService {
   /// Pulsanti della mappa: le zone dove il giocatore di turno può andare adesso (colorate; le altre
   /// in grigio). A piedi: zone collegate (o la propria, se c'è un altro settore libero) con azioni
   /// sufficienti. Biglietto / treno / traghetto: solo dal settore di passaggio, verso il passaggio della zona.
+  /// Ritorno gratis del Biglietto: chi è arrivato in una zona con il Biglietto può tornare alla zona di
+  /// partenza senza un altro Biglietto, finché resta nella zona d'arrivo (`Users/{uid}.ticketReturn`).
+  /// Restituisce la zona dove si può tornare gratis (o null).
+  static String? freeReturnZone(Map? ticketReturn, Map? pos) {
+    if (ticketReturn == null || pos == null) return null;
+    return ticketReturn['at'] == pos['zone'] ? ticketReturn['from'] as String? : null;
+  }
+
   static bool canReach({
     required Map<String, dynamic>? state,
     required List<Map<String, dynamic>> events,
@@ -705,6 +716,7 @@ class TableService {
     required int actionsLeft,
     required int tickets,
     String? shield,
+    String? freeReturn,
   }) {
     final from = pos?['zone'] as String?;
     final fromSector = _i(pos?['sector']);
@@ -721,7 +733,7 @@ class TableService {
       return false;
     }
     if (from != null && TableLayout.typeOf(from, fromSector) != SectorType.passaggio) return false;
-    if (route == MoveRoute.ticket && tickets <= 0) return false;
+    if (route == MoveRoute.ticket && tickets <= 0 && freeReturn != to) return false;
     final arrival = arrivalSector(to);
     return arrival != null && ok(arrival);
   }
@@ -753,6 +765,7 @@ class TableService {
     final events = await activeEvents(party);
     final me = (await ItemService.userRef(uid).get()).data();
     if (me?['wildEncounter'] is Map) throw Exception('Prima affronta o sfuggi al Pokémon selvatico');
+    if (me?['spotted'] is Map) throw Exception('Ti hanno notato: prima elùdili (azione o Fune di fuga)');
     final shield = ItemService.shieldZone(me);
     final cur = me?['pos'] as Map?;
     final from = cur?['zone'] as String?;
@@ -774,16 +787,25 @@ class TableService {
     if (cur?['zone'] == zone && _i(cur?['sector']) == sector) throw Exception('Sei già in questo settore');
     final cost = moveCost(events, from, zone, shield: shield, sector: sector);
     var needTicket = false;
-    if (route == MoveRoute.ticket) {
+    final freeReturn = route == MoveRoute.ticket && freeReturnZone(me?['ticketReturn'] as Map?, cur) == zone;
+    if (route == MoveRoute.ticket && !freeReturn) {
       if (!useTicket) throw Exception('${spec.name} non è collegata alla tua zona: serve un Biglietto');
       if ((ItemService.readInventory(me)['biglietto'] ?? 0) <= 0) throw Exception('Non hai Biglietti');
       needTicket = true;
     }
     await _spend(party, uid, cost, setPos: {'zone': zone, 'sector': sector});
-    if (needTicket) await ItemService.consume(uid, ItemId.biglietto);
+    if (needTicket) {
+      await ItemService.consume(uid, ItemId.biglietto);
+      // andata con il Biglietto: il ritorno alla zona di partenza è gratis
+      await ItemService.userRef(uid).set({'ticketReturn': {'from': from, 'at': zone}}, SetOptions(merge: true));
+    } else if (zone != from && me?['ticketReturn'] != null) {
+      // uscito dalla zona d'arrivo (anche usando il ritorno): il ritorno gratis non vale più
+      await ItemService.userRef(uid).set({'ticketReturn': FieldValue.delete()}, SetOptions(merge: true));
+    }
     final type = TableLayout.typeOf(zone, sector);
+    final msgs = <String>[];
     if (!ItemService.isActive(me?['stealthUntil'])) {
-      // Passo felpato: niente tracce, trappole o allarmi
+      // Passo felpato: niente tracce, trappole, allarmi e nessuno ti nota
       await ItemService.addTrace(party, uid, {
         'kind': 'move',
         'fromZone': cur?['zone'],
@@ -793,15 +815,91 @@ class TableService {
         'strength': traceStrength(type, visible: visibleTrace),
       });
       await _checkAlarms(party, uid, zone, sector);
+      if (await _checkSpotted(party, uid, zone, sector)) {
+        msgs.add('Qualcuno nel settore ti ha notato! Per eluderlo usa $kEludeCost azione oppure una Fune di fuga.');
+      }
       if (await _checkTrap(party, uid, zone, sector)) {
-        return 'Sei finito in una Trappola! Salterai il prossimo turno, a meno di usare una Fune di fuga.';
+        msgs.add('Sei finito in una Trappola! Salterai il prossimo turno, a meno di usare una Fune di fuga.');
       }
     }
-    if (type == SectorType.selvaggio && _rnd.nextDouble() < kWildEncounterChance) {
+    if (msgs.isEmpty && type == SectorType.selvaggio && _rnd.nextDouble() < kWildEncounterChance) {
       final name = await _startWildEncounter(uid, zone, sector);
-      return 'Un $name selvatico ti sbarra la strada! Affrontalo o fuggi (costa $kWildFleeCost azione).';
+      msgs.add('Un $name selvatico ti sbarra la strada! Affrontalo o fuggi (costa $kWildFleeCost azione).');
     }
-    return null;
+    return msgs.isEmpty ? null : msgs.join('\n');
+  }
+
+  // ------------------------------------------------------------- furtività
+
+  /// Statistiche del Pokémon attivo di [uid] (per destrezza e percezione).
+  static Future<Map<String, dynamic>?> _stats(String uid) async {
+    final pk = await activePokemon(uid);
+    if (pk == null) return null;
+    return (await ItemService.userRef(uid).collection('Pokemon').doc(pk).get()).data();
+  }
+
+  /// Chi entra in un settore dove ci sono altri giocatori tira d20 + destrezza (Velocità) contro la CD
+  /// del settore + la percezione (Difesa Speciale) del più attento. Se fallisce resta "notato"
+  /// (`Users/{uid}.spotted`) finché non elude (1 azione o una Fune di fuga) e chi è nel settore riceve
+  /// subito l'avviso. Se riesce non succede niente (e non sa se c'era qualcuno).
+  static Future<bool> _checkSpotted(String party, String uid, String zone, int sector) async {
+    final others = <String>[];
+    var bestSpDef = 0;
+    for (final p in (await PartyService.players(party).get()).docs) {
+      if (p.id == uid) continue;
+      final pos = (await ItemService.userRef(p.id).get()).data()?['pos'];
+      if (pos is! Map || pos['zone'] != zone || _i(pos['sector']) != sector) continue;
+      others.add(p.id);
+      bestSpDef = max(bestSpDef, _i((await _stats(p.id))?['DefSpec']));
+    }
+    if (others.isEmpty) return false;
+    final cd = stealthCd(TableLayout.typeOf(zone, sector), bestSpDef);
+    final roll = _rnd.nextInt(20) + 1;
+    final total = roll + dexterityBonus(_i((await _stats(uid))?['Vel']));
+    debugPrint('Furtività: $uid entra in $zone/$sector con ${others.join(', ')}: '
+        'tiro $roll, totale $total contro CD $cd → ${total >= cd ? 'non notato' : 'NOTATO'}');
+    if (total >= cd) return false;
+    await ItemService.userRef(uid).set({
+      'spotted': {'zone': zone, 'sector': sector, 'by': others, 'roll': roll, 'total': total, 'cd': cd},
+    }, SetOptions(merge: true));
+    // avviso subito a chi è nel settore (a comparsa in GameWatcher e nella scheda "Avvistamenti")
+    await PartyService.party(party).collection('events').add({
+      'type': 'spotted',
+      'uid': uid,
+      'to': others,
+      'zone': zone,
+      'sector': sector,
+      'round': TableClock.round,
+      'at': FieldValue.serverTimestamp(),
+    });
+    return true;
+  }
+
+  /// Avvistamenti ricevuti da [uid] (eventi 'spotted' che lo hanno come destinatario).
+  static Stream<QuerySnapshot<Map<String, dynamic>>> watchSightings(String party, String uid) => shared(
+      'sightings:$party:$uid',
+      () => PartyService.party(party).collection('events').where('to', arrayContains: uid).snapshots());
+
+  /// Eludere chi ti ha notato (è già stato avvisato): con un'azione (se non ne hai più, la perdi al
+  /// turno dopo) oppure con una Fune di fuga ([rope]).
+  static Future<void> elude(String party, String uid, {bool rope = false}) async {
+    final uref = ItemService.userRef(uid);
+    final sp = (await uref.get()).data()?['spotted'];
+    if (sp is! Map) throw Exception('Nessuno ti ha notato');
+    if (rope) {
+      await ItemService.consume(uid, ItemId.fune);
+      await uref.set({'spotted': FieldValue.delete()}, SetOptions(merge: true));
+      return;
+    }
+    final st = (await stateRef(party).get()).data();
+    final mine = st?['order'] is List && List<String>.from(st!['order'] as List)[_i(st['idx'])] == uid;
+    if (mine && _i(st['actionsLeft']) >= kEludeCost) {
+      await _spend(party, uid, kEludeCost);
+      await uref.set({'spotted': FieldValue.delete()}, SetOptions(merge: true));
+    } else {
+      await uref.set({'spotted': FieldValue.delete(), 'actionPenalty': FieldValue.increment(kEludeCost)},
+          SetOptions(merge: true));
+    }
   }
 
   // ------------------------------------------------- informazioni dai locali

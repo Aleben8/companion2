@@ -226,6 +226,13 @@ class _GameWatcherState extends State<GameWatcher> {
         if (mounted) snack(context, '🚨 Il tuo Allarme è scattato$where: è passato ${data['uid']}');
         continue;
       }
+      if (data['type'] == 'spotted') {
+        if ((data['to'] as List? ?? const []).contains(_uid) && mounted) {
+          snack(context, '👀 Hai notato ${data['uid']} entrare nel tuo settore '
+              '(${zoneSpec('${data['zone']}').name}, settore ${data['sector']}): si è allontanato in fretta');
+        }
+        continue;
+      }
       if (data['type'] != 'bell' || data['uid'] == _uid) continue;
       final pos = context.read<LocationService>().position;
       var where = '';

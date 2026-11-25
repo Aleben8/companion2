@@ -13,20 +13,34 @@ import '../theme.dart';
 import '../widgets/common.dart';
 import '../widgets/drop.dart';
 
-/// Emporio e crafting (si apre dalla Borsa).
+/// Emporio e crafting. Al tavolo l'emporio si apre dalla tab Tavolo (scheda "La tua posizione") e dalla
+/// Borsa solo il crafting ([craftOnly]); dal vivo resta anche nella Borsa.
 ///  - Al tavolo: ogni zona ha il suo emporio (assortimento base + la protezione del bioma);
 ///    l'Hub ha il mercato centrale con tutti gli strumenti.
 ///  - Dal vivo: dentro una zona come al tavolo, altrimenti vicino a una palestra (entro [kGymRadiusMeters]).
-Future<void> showShop(BuildContext context, String uid) => showModalBottomSheet<void>(
+Future<void> showShop(BuildContext context, String uid, {bool craftOnly = false}) => showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
       showDragHandle: true,
-      builder: (_) => FractionallySizedBox(heightFactor: 0.88, child: _ShopBody(uid: uid)),
+      builder: (_) => FractionallySizedBox(heightFactor: 0.88, child: _ShopBody(uid: uid, craftOnly: craftOnly)),
     );
+
+/// Emporio aperto qui? Al tavolo solo nei settori cittadini (null = aperto, altrimenti il motivo).
+String? tableShopClosedReason(Map? pos) {
+  final zone = pos?['zone'] as String?;
+  if (zone == null) return 'Non sei ancora sulla mappa';
+  final sector = (pos?['sector'] as num?)?.toInt() ?? 0;
+  if (TableLayout.typeOf(zone, sector) == SectorType.cittadino) return null;
+  final city = TableLayout.firstOf(zone, SectorType.cittadino);
+  return city == null
+      ? 'In ${zoneSpec(zone).name} non c’è un emporio'
+      : 'Emporio nel settore cittadino $city';
+}
 
 class _ShopBody extends StatefulWidget {
   final String uid;
-  const _ShopBody({required this.uid});
+  final bool craftOnly;
+  const _ShopBody({required this.uid, this.craftOnly = false});
   @override
   State<_ShopBody> createState() => _ShopBodyState();
 }
@@ -38,7 +52,7 @@ class _ShopBodyState extends State<_ShopBody> {
   @override
   void initState() {
     super.initState();
-    if (!kTableMode) _pos = context.read<LocationService>().current();
+    if (!kTableMode && !widget.craftOnly) _pos = context.read<LocationService>().current();
   }
 
   Future<void> _do(Future<void> Function() f, String ok) async {
@@ -78,7 +92,11 @@ class _ShopBodyState extends State<_ShopBody> {
         }
       }
       if (zone == 'hub') return (title: 'Mercato centrale · ${spec.name}', stock: _generalStock, closed: null);
-      final local = <ItemId>[...kBasicStock, if (kZoneShield[zone] != null) kZoneShield[zone]!];
+      final local = <ItemId>[
+        ...kBasicStock,
+        if (kZoneShield[zone] != null) kZoneShield[zone]!,
+        if (kTableMode) ItemId.biglietto, // per le zone non collegate: in vendita in ogni emporio
+      ];
       return (title: 'Emporio · ${spec.name}', stock: [for (final id in local) itemDef(id)], closed: null);
     }
     if (kGymTestMode) return (title: 'Emporio (modalità prova)', stock: _generalStock, closed: null);
@@ -115,10 +133,11 @@ class _ShopBodyState extends State<_ShopBody> {
             final inv = ItemService.readInventory(user);
             final coins = ItemService.coinsOf(user);
             final full = ItemService.bagCount(inv) >= kBagLimit;
-            final waiting = !kTableMode && posSnap.connectionState != ConnectionState.done;
+            final waiting = !kTableMode && !widget.craftOnly && posSnap.connectionState != ConnectionState.done;
             final shop = _shop(user, posSnap.data);
+            final showShop = !widget.craftOnly;
             return ListView(padding: const EdgeInsets.fromLTRB(16, 0, 16, 24), children: [
-              Text(shop.title, style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w800, color: Pal.ink)),
+              Text(showShop ? shop.title : 'Crafting', style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w800, color: Pal.ink)),
               const SizedBox(height: 8),
               Row(children: [
                 InfoChip('🪙 $coins', color: const Color(0xFFD08A00)),
@@ -126,7 +145,9 @@ class _ShopBodyState extends State<_ShopBody> {
                 InfoChip('🎒 ${ItemService.bagCount(inv)}/$kBagLimit', color: full ? Pal.bad : Pal.accent),
               ]),
               const SizedBox(height: 12),
-              if (waiting)
+              if (!showShop)
+                const SizedBox.shrink()
+              else if (waiting)
                 const Center(child: Padding(padding: EdgeInsets.all(24), child: CircularProgressIndicator()))
               else if (shop.closed != null)
                 Padding(
@@ -135,6 +156,9 @@ class _ShopBodyState extends State<_ShopBody> {
                 )
               else
                 for (final item in shop.stock) _row(item, inv, coins, full),
+              if (!showShop)
+                const Text('L’emporio si apre dalla tab Tavolo, quando sei in un settore cittadino.',
+                    style: TextStyle(color: Pal.sub, fontSize: 12)),
               const SizedBox(height: 16),
               const Text('Crafting', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: Pal.ink)),
               const SizedBox(height: 4),

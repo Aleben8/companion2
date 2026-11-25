@@ -354,11 +354,12 @@ class _InventoryTabState extends State<InventoryTab> {
           Row(children: [
             Expanded(
               child: DropButton(
-                label: 'Emporio',
-                icon: Icons.storefront,
+                // al tavolo l'emporio sta nella tab Tavolo (si apre nei settori cittadini): qui solo il crafting
+                label: kTableMode ? 'Crafting' : 'Emporio',
+                icon: kTableMode ? Icons.handyman : Icons.storefront,
                 height: 44,
                 colors: Pal.gold,
-                onTap: () => showShop(context, _uid),
+                onTap: () => showShop(context, _uid, craftOnly: kTableMode),
               ),
             ),
             const SizedBox(width: 8),

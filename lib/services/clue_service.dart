@@ -165,6 +165,7 @@ class ClueService {
       myPos = me?['pos'] as Map?;
       if (myPos == null) throw Exception('Non sei ancora sulla mappa');
       if (me?['wildEncounter'] is Map) throw Exception('Prima affronta o sfuggi al Pokémon selvatico');
+      if (me?['spotted'] is Map) throw Exception('Ti hanno notato: prima elùdili (azione o Fune di fuga)');
       await TableService.loadLayout(party);
       sectorType = TableLayout.typeOf('${myPos['zone']}', (myPos['sector'] as num).toInt());
       await TableService.spendAction(party, uid); // cercare è un'azione

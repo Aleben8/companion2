@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../services/table_service.dart';
+import '../table/events.dart';
 import '../table/sectors.dart';
 import '../table/zones.dart';
 import '../theme.dart';
@@ -20,7 +21,8 @@ class TableMap extends StatefulWidget {
   final bool myTurn;
   final int actionsLeft;
   final int ticketCount;
-  final bool wildPending; // incontro selvatico da risolvere
+  final String? freeReturn; // zona dove puoi tornare gratis (andata con il Biglietto)
+  final bool wildPending; // incontro selvatico o "ti hanno notato" da risolvere
   final bool busy;
   final Future<void> Function(ZoneSpec zone, int sector, {required bool ticket, required bool visibleTrace}) onMove;
 
@@ -33,6 +35,7 @@ class TableMap extends StatefulWidget {
     required this.myTurn,
     required this.actionsLeft,
     required this.ticketCount,
+    this.freeReturn,
     required this.wildPending,
     required this.busy,
     required this.onMove,
@@ -64,20 +67,23 @@ class _TableMapState extends State<TableMap> {
         actionsLeft: widget.actionsLeft,
         tickets: widget.ticketCount,
         shield: widget.shield,
+        freeReturn: widget.freeReturn,
       );
 
   String get _hint {
     if (!widget.myTurn) return 'Non è il tuo turno: le zone sono in grigio.';
-    if (widget.wildPending) return 'Prima affronta o sfuggi al Pokémon selvatico.';
+    if (widget.wildPending) return 'Prima risolvi quello che ti è successo entrando (scheda qui sopra).';
     if (widget.actionsLeft <= 0) return 'Hai finito le azioni: termina il turno.';
-    return 'Colorate le zone dove puoi andare adesso. Tocca una zona per scegliere il settore.';
+    return 'Colorate le zone dove puoi andare adesso. Tocca una zona per scegliere il settore d’arrivo. '
+        'I settori della tua zona sono nella scheda qui sopra.';
   }
 
   @override
   Widget build(BuildContext context) {
     final zones = TableLayout.zonesInPlay;
     // la zona aperta si chiude se non è più raggiungibile (ad esempio dopo lo spostamento)
-    final open = _zone != null && (_zone == _from || _reachable(_zone!)) ? _zone : null;
+    // la tua zona ha i suoi settori nella scheda "La tua posizione": qui si aprono solo le altre
+    final open = _zone != null && _zone != _from && _reachable(_zone!) ? _zone : null;
     return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
       Text(_hint, style: const TextStyle(color: Pal.sub, fontSize: 12)),
       const SizedBox(height: 8),
@@ -113,7 +119,7 @@ class _TableMapState extends State<TableMap> {
       tag = switch (route) {
         MoveRoute.direct => '${TableService.moveCost(_active, _from, z.id, shield: widget.shield)} az.',
         MoveRoute.passage => 'Treno/traghetto',
-        MoveRoute.ticket => 'Biglietto',
+        MoveRoute.ticket => widget.freeReturn == z.id ? 'Ritorno gratis' : 'Biglietto',
       };
     }
     final blocked = TableService.blockedSectors(_active, z.id, shield: widget.shield);
@@ -123,7 +129,7 @@ class _TableMapState extends State<TableMap> {
     };
     final fg = colored ? Colors.white : const Color(0xFF6B717A);
     return GestureDetector(
-      onTap: colored
+      onTap: colored && !mine
           ? () => setState(() {
                 _zone = selected ? null : z.id;
                 _sector = null;
@@ -155,6 +161,18 @@ class _TableMapState extends State<TableMap> {
             ),
             if (tag != null) _Badge(tag, mine ? Pal.accent : (colored ? Colors.black26 : Colors.black12), fg),
           ]),
+          for (final line in _eventLines(z.id))
+            Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                decoration: BoxDecoration(color: Colors.black26, borderRadius: BorderRadius.circular(6)),
+                child: Text(line,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: fg, height: 1.2)),
+              ),
+            ),
           const SizedBox(height: 8),
           Wrap(spacing: 4, runSpacing: 4, children: [
             for (var s = 1; s <= z.sectors; s++)
@@ -172,11 +190,30 @@ class _TableMapState extends State<TableMap> {
     );
   }
 
+  /// Eventi della zona scritti sul pulsante: quelli in corso (con i giri che mancano) e quelli annunciati.
+  List<String> _eventLines(String zone) {
+    final round = _i(widget.state['round']);
+    final out = <String>[];
+    for (final e in widget.events) {
+      if (e['zone'] != zone) continue;
+      if (e['status'] == 'active') {
+        final left = _i(e['endRound']) - round + 1;
+        final name = e['legendary'] == true && e['legendaryName'] != null ? '${e['legendaryName']}' : '${e['name']}';
+        out.add('${e['legendary'] == true ? '⚡' : '⚠️'} $name · ${left <= 1 ? 'ultimo giro' : 'ancora $left giri'}');
+      } else if (e['status'] == 'announced') {
+        out.add('🔜 In arrivo: ${e['name']}');
+      }
+    }
+    return out;
+  }
+
   // --------------------------------------------------------- pannello settori
 
   Widget _sectorPanel(ZoneSpec z) {
     final route = _route(z.id);
     final travel = z.id != _from && route != MoveRoute.direct;
+    final freeReturn = route == MoveRoute.ticket && widget.freeReturn == z.id;
+    final useTicket = travel && route == MoveRoute.ticket && !freeReturn;
     final arrival = TableService.arrivalSector(z.id);
     final blocked = TableService.blockedSectors(_active, z.id, shield: widget.shield);
     final legendarySector = {
@@ -203,12 +240,35 @@ class _TableMapState extends State<TableMap> {
       child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
         if (travel)
           Text(
-            route == MoveRoute.ticket
-                ? 'Non collegata: con un Biglietto arrivi nel settore di passaggio${arrival == null ? '' : ' ($arrival)'}.'
+            freeReturn
+                ? 'Ritorno gratis: sei arrivato qui con il Biglietto, tornare costa solo le azioni. '
+                    'Arrivi nel settore di passaggio${arrival == null ? '' : ' ($arrival)'}.'
+                : route == MoveRoute.ticket
+                ? 'Non collegata: con un Biglietto arrivi nel settore di passaggio${arrival == null ? '' : ' ($arrival)'}. '
+                    'Il ritorno qui da là sarà gratis.'
                 : 'Con il treno/traghetto arrivi nel settore di passaggio${arrival == null ? '' : ' ($arrival)'}.',
             style: const TextStyle(color: Pal.sub, fontSize: 12),
           ),
         if (travel) const SizedBox(height: 8),
+        // eventi della zona: cosa succede lì
+        for (final e in widget.events)
+          if (e['zone'] == z.id && (e['status'] == 'active' || e['status'] == 'announced'))
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Text.rich(
+                TextSpan(children: [
+                  TextSpan(
+                    text: e['status'] == 'active' ? '⚠️ ${e['name']}: ' : '🔜 ${e['name']} (in arrivo): ',
+                    style: const TextStyle(fontWeight: FontWeight.w800),
+                  ),
+                  TextSpan(
+                    text: (e['status'] == 'active' ? eventDef('${e['defId']}').active : eventDef('${e['defId']}').announce)
+                        .replaceAll('{zone}', z.name),
+                  ),
+                ]),
+                style: const TextStyle(fontSize: 12, height: 1.3),
+              ),
+            ),
         Wrap(spacing: 8, runSpacing: 8, children: [
           for (var s = 1; s <= z.sectors; s++)
             _sectorChip(
@@ -242,7 +302,7 @@ class _TableMapState extends State<TableMap> {
         DropButton(
           label: problem ??
               'Vai: ${z.name}, settore $sector · ${cost(sector!)} ${cost(sector) == 1 ? 'azione' : 'azioni'}'
-                  '${route == MoveRoute.ticket && travel ? ' + Biglietto' : ''}',
+                  '${useTicket ? ' + Biglietto' : (freeReturn ? ' · ritorno gratis' : '')}',
           icon: problem == null ? Icons.directions_walk : null,
           colors: colors,
           height: 46,
@@ -250,7 +310,7 @@ class _TableMapState extends State<TableMap> {
           onTap: problem != null
               ? null
               : () async {
-                  await widget.onMove(z, sector!, ticket: travel && route == MoveRoute.ticket, visibleTrace: _visible);
+                  await widget.onMove(z, sector!, ticket: useTicket, visibleTrace: _visible);
                   if (mounted) {
                     setState(() {
                       _sector = null;

@@ -166,8 +166,10 @@ const List<ItemDef> kItems = [
     'Potrai uscire da uno scontro: la battaglia termina all’istante e il party deve allontanarsi in una '
         'direzione casuale. Si applica la regola del doppio scontro: le due squadre non potranno '
         'scontrarsi subito dopo.',
-    'Si usa in battaglia, oppure quando cadi in una Trappola.',
+    'Si usa in battaglia, quando cadi in una Trappola, oppure per eludere chi ti ha notato entrando in un settore '
+        '(nessuno vede nulla).',
     [Color(0xFFB5694F), Color(0xFFD9A07A)],
+    liveUsage: 'Si usa in battaglia, oppure quando cadi in una Trappola.',
     category: ItemCategory.battaglia, price: 3, icon: Icons.logout, rarity: 3,
   ),
   ItemDef(
@@ -363,8 +365,10 @@ const List<ItemDef> kItems = [
     ItemId.biglietto,
     'Biglietto',
     'Ti permette di raggiungere una zona NON collegata alla tua (es. dalla Regione innevata all\'Isola dei relitti). '
-        'Il costo in azioni è quello normale dello spostamento.',
-    'Si usa spostandoti: se la zona non è collegata, la app te lo propone.',
+        'Parti dal settore di passaggio della tua zona e arrivi in quello della zona scelta; il costo in azioni è '
+        'quello normale dello spostamento. Il ritorno alla zona di partenza è gratis finché resti nella zona '
+        'd\'arrivo. Si compra in ogni emporio (settori cittadini).',
+    'Si usa spostandoti: dalla mappa scegli una zona non collegata (pulsante colorato con "Biglietto").',
     [Color(0xFF8A6BC9), Color(0xFFC9B3F0)],
     price: 5,
     icon: Icons.train,

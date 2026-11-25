@@ -53,8 +53,16 @@ Entrambe le modalità usano lo stesso progetto Firebase (`lib/firebase_options.d
   **Tavolo**: tocca la zona, sceglie il settore nel pannello che compare sotto e conferma con un solo bottone
   ("Vai: zona, settore N · costo"). Ogni spostamento costa 1 azione (`kMoveActionCost`). Le posizioni sono private: le altre
   si scoprono con il Radar. Al tavolo si gioca **al massimo in 9** (`kMaxTablePlayers`).
+- **Schermata del Tavolo**, dall'alto: turno (azioni, "Fine turno"); le cose da risolvere subito (ti hanno notato, incontro
+  selvatico, messaggio dei locali, avvistamenti); **La tua posizione**: zona e settore, gli eventi della tua zona (con "Prendi
+  uno strumento" / "Sfida il leggendario"), poi **tutti i settori della zona**, ognuno con tipo, costo per andarci e stato
+  (bloccato da un evento, leggendario, chi hai avvistato lì, dove hai già cercato, la tua traccia, i tuoi indizi, la tua
+  Trappola o il tuo Allarme); toccandone uno ci vai ("Vai al settore N"). Sotto, cosa puoi fare nel tuo settore (Cerca
+  indizi, Emporio se è cittadino). Poi **Altre zone** (la mappa a pulsanti) e in fondo gli strumenti del Master.
+  Codice: `lib/screens/here_sectors.dart`.
 - **Mappa.** Un pulsante per ogni zona in gioco, con le miniature dei suoi settori (icona del tipo e numero; settori
-  bloccati barrati, ⚡ dove c'è il leggendario, bordo sul settore dove sei). Sono **colorate** le zone dove puoi andare adesso
+  bloccati barrati, ⚡ dove c'è il leggendario, bordo sul settore dove sei) e, sotto il nome, gli eventi della zona
+  ("⚠️ Frana nel Canyon · ancora 2 giri", "🔜 In arrivo: …"). Sono **colorate** le zone dove puoi andare adesso
   (è il tuo turno, hai le azioni e, per Biglietto/treno/traghetto, sei nel settore di passaggio), **grigie** e non
   selezionabili le altre. Sul pulsante: "Tu", il costo in azioni oppure "Biglietto" / "Treno/traghetto", e un'icona per gli
   eventi in corso. Codice: `lib/screens/table_map.dart`, regola in `TableService.canReach`.
@@ -80,11 +88,14 @@ Nel riquadro Master della tab Tavolo c'è l'interruttore **Eventi di zona manual
 
 ### Collegamenti tra zone e viaggi speciali
 
-Non tutte le zone confinano: a piedi ci si sposta (di settore o di zona) solo tra zone **collegate**, scegliendo liberamente il settore di arrivo. Il Master decide i collegamenti dal riquadro Master della tab Tavolo, bottone **Collegamenti tra zone** (spunta le coppie; "Proposta" ripristina la bozza letta dalla mappa, `kDefaultLinks` in `lib/table/zones.dart`). Le scelte restano salvate nel party e valgono dalla partita successiva e, se la partita è in corso, subito. La mappa disegna i collegamenti.
+Non tutte le zone confinano: a piedi ci si sposta (di settore o di zona) solo tra zone **collegate**, scegliendo liberamente il settore di arrivo. Il Master decide i collegamenti dal riquadro Master della tab Tavolo, bottone **Collegamenti tra zone** (spunta le coppie; "Proposta" ripristina la bozza letta dalla mappa, `kDefaultLinks` in `lib/table/zones.dart`). Le scelte restano salvate nel party e valgono dalla partita successiva e, se la partita è in corso, subito. Sulla mappa le zone raggiungibili sono colorate.
 
 Per andare in una zona **non collegata** (es. Neve → Canyon) non si va a piedi:
 - **Biglietto** (strumento solo tavolo) o **eventi di passaggio**: *Treno straordinario* (Hub) e *Traghetto dei relitti* (Isola); finché sono attivi, chi è in quella zona raggiunge qualsiasi zona senza Biglietto.
 - In tutti e tre i casi si parte **solo da un settore di passaggio** e si arriva **nel settore di passaggio** della zona di destinazione (il settore non si sceglie). Il costo in azioni è quello normale.
+- **Ritorno gratis**: chi arriva in una zona con il Biglietto può tornare alla zona di partenza senza un altro Biglietto
+  (paga solo le azioni), finché resta nella zona d'arrivo; se ne esce in un altro modo il ritorno gratis si perde
+  (`Users/{uid}.ticketReturn`). Sulla mappa il pulsante della zona di partenza dice "Ritorno gratis".
 
 ### Biomi in gioco
 
@@ -114,6 +125,20 @@ Distribuzione di partenza (30 settori):
 | **Impervio** | Entrare nel settore costa +1 azione. Tracce: forza +1. *Cerca* trova uno strumento al 30% invece del 15%. Qui compare il leggendario. Locali: CD +2. |
 | **Rifugio** | A inizio turno chi è qui recupera 5 PS. Nessuno può sfidarlo a battaglia (né lui può combattere contro altri giocatori da qui); il Radar lo vede comunque. Locali: CD −1. |
 | **Passaggio** | Da qui partono e qui arrivano Biglietto, treno e traghetto. Tracce: forza +1. |
+
+### Furtività: entrare in un settore dove c'è qualcuno
+
+Quando ti sposti in un settore dove ci sono altri giocatori la app tira **d20 + destrezza** contro una CD:
+
+- **destrezza** = Velocità del tuo Pokémon attivo × 0,5 (per ora; poi potrà essere una statistica dedicata);
+- **CD** = 10 + modificatore del settore + **percezione** del più attento nel settore (Difesa Speciale × 0,5, per ora);
+- modificatori del settore: cittadino −2 (folla), selvaggio −1 e impervio −1 (ripari), rifugio +2, passaggio +1.
+
+Se riesci non succede nulla (e non sai se c'era qualcuno). Se fallisci, chi è nel settore riceve **subito** l'avviso
+"Hai notato X entrare nel tuo settore" (a comparsa e nella scheda **Avvistamenti** della tab Tavolo, che mostra questo giro e
+il precedente), e a te compare la scheda **"Ti hanno notato!"**: non puoi muoverti né cercare finché non eludi, con **1 azione**
+(se non ne hai, la perdi al turno dopo) o con una **Fune di fuga**. Con il Passo felpato attivo nessuno ti nota. Solo al tavolo. Costanti in `lib/table/sectors.dart` (`kStealthBaseCd`, `kDexterityMultiplier`,
+`kPerceptionMultiplier`, `kEludeCost`), codice in `TableService._checkSpotted` / `elude`.
 
 ### Tracce e informazioni dai locali
 
@@ -327,8 +352,8 @@ Tutte le regole numeriche sono in `lib/items.dart` (costanti `k...`).
 
 Il Radar meteo sostituisce il Telescopio.
 
-**Emporio** (bottone nella Borsa)
-- Tavolo: ogni zona ha il suo emporio (Pozione, Fune, Antidoto, Elisir, Sensore + la protezione del suo bioma); l'Hub è il mercato centrale con tutti gli strumenti. Serve essere nella zona.
+**Emporio** (al tavolo: bottone nella scheda "La tua posizione" della tab Tavolo; dal vivo: bottone nella Borsa)
+- Tavolo: ogni zona ha il suo emporio (Pozione, Fune, Antidoto, Elisir, Sensore, **Biglietto** + la protezione del suo bioma); l'Hub è il mercato centrale con tutti gli strumenti. È aperto solo in un **settore cittadino**: fuori il bottone è grigio e dice in quale settore andare. Nella Borsa al tavolo resta solo il **Crafting**.
 - Dal vivo: dentro una zona come al tavolo; fuori dalle zone si compra entro `kGymRadiusMeters` da una palestra (tutti gli strumenti tranne il Biglietto).
 - Prezzi: `price` di ogni `ItemDef`.
 
@@ -338,7 +363,7 @@ Il Radar meteo sostituisce il Telescopio.
 - Vittoria PvP: `kCoinsPvpWin` monete e `kPvpDropChance` di uno strumento. Primo badge di una palestra: `kCoinsGymWin` monete + 1 strumento. Leggendario: 2 strumenti + `kCoinsLegendary`.
 - Eventi Mercato/Raccolto (già presenti).
 - **Scambi** tra giocatori dalla Borsa ("Scambia"): proposta con o senza richiesta in cambio; al tavolo bisogna essere nella stessa zona.
-- **Crafting** (nell'Emporio): 2 Pozioni → Super Pozione; 2 Caramelle → Guanto; Pozione + Elisir → Revitalizzante (`kRecipes`).
+- **Crafting** (nell'Emporio, e al tavolo dal bottone Crafting della Borsa): 2 Pozioni → Super Pozione; 2 Caramelle → Guanto; Pozione + Elisir → Revitalizzante (`kRecipes`).
 - Nuove partite al tavolo azzerano monete, protezioni e tracce.
 
 **Tracce (per la Lente)**: ogni spostamento e ogni ricerca scrive un documento in `Party/{codice}/traces` (non lo fa chi ha il Passo felpato). Gli Allarmi stanno in `Party/{codice}/alarms`, gli scambi in `Party/{codice}/trades`.
