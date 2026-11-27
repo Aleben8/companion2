@@ -331,6 +331,47 @@ class _InventoryTabState extends State<InventoryTab> {
     );
   }
 
+  /// Scheda di un oggetto: immagine, nome, descrizione, come si usa e il bottone "Usa".
+  Future<void> _details(ItemDef item, int qty) => showModalBottomSheet<void>(
+        context: context,
+        showDragHandle: true,
+        isScrollControlled: true,
+        builder: (ctx) => SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
+            child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+              Row(children: [
+                ItemImage(item, size: 72),
+                const SizedBox(width: 14),
+                Expanded(
+                  child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    Text(item.name, style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w800, color: Pal.ink)),
+                    Text('Ne hai $qty', style: TextStyle(color: item.colors.first, fontWeight: FontWeight.w800)),
+                  ]),
+                ),
+              ]),
+              const SizedBox(height: 14),
+              Text(item.description, style: const TextStyle(fontStyle: FontStyle.italic, fontSize: 15, height: 1.35)),
+              const SizedBox(height: 8),
+              Text(item.usage, style: const TextStyle(fontSize: 13, color: Pal.sub)),
+              const SizedBox(height: 16),
+              DropButton(
+                label: _battleOnly(item) ? 'Si usa in battaglia' : 'Usa',
+                icon: _battleOnly(item) ? Icons.sports_mma : Icons.check_circle_outline,
+                colors: item.colors,
+                height: 48,
+                onTap: _battleOnly(item) || qty <= 0
+                    ? null
+                    : () {
+                        Navigator.pop(ctx);
+                        _use(item);
+                      },
+              ),
+            ]),
+          ),
+        ),
+      );
+
   @override
   Widget build(BuildContext context) {
     return StreamBuilder<Map<String, dynamic>>(
@@ -381,102 +422,89 @@ class _InventoryTabState extends State<InventoryTab> {
               child: Text('La borsa è vuota: passa all’Emporio, cerca indizi o sfida una palestra.',
                   textAlign: TextAlign.center, style: TextStyle(color: Pal.sub)),
             ),
-          for (final cat in ItemCategory.values) ...[
-            if (visible.any((i) => i.category == cat)) SectionTitle(cat.label),
-            for (final item in visible.where((i) => i.category == cat))
-              ItemCard(item: item, qty: inv[item.key] ?? 0, onUse: () => _use(item)),
-          ],
+          // griglia: solo l'oggetto e la quantità; toccandolo si apre la scheda con descrizione e "Usa"
+          for (final cat in ItemCategory.values)
+            if (visible.any((i) => i.category == cat)) ...[
+              SectionTitle(cat.label),
+              SizedBox(
+                width: double.infinity, // la griglia parte da sinistra
+                child: Wrap(spacing: 12, runSpacing: 14, children: [
+                  for (final item in visible.where((i) => i.category == cat))
+                    ItemTile(item: item, qty: inv[item.key] ?? 0, onTap: () => _details(item, inv[item.key] ?? 0)),
+                ]),
+              ),
+            ],
         ]);
       },
     );
   }
 }
 
-/// Scheda strumento, come nel tuo schema: etichetta colorata a sinistra,
-/// descrizione in corsivo e sprite a destra.
-class ItemCard extends StatelessWidget {
+/// Immagine dello strumento (o, se manca, l'icona su un cerchio con i suoi colori).
+class ItemImage extends StatelessWidget {
   final ItemDef item;
-  final int qty;
-  final VoidCallback onUse;
-  const ItemCard({super.key, required this.item, required this.qty, required this.onUse});
+  final double size;
+  const ItemImage(this.item, {super.key, this.size = 56});
 
   @override
-  Widget build(BuildContext context) {
-    final empty = qty <= 0;
-    return Opacity(
-      opacity: empty ? 0.5 : 1,
-      child: Container(
-        margin: const EdgeInsets.only(bottom: 14),
-        clipBehavior: Clip.antiAlias,
-        decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(18),
-          border: Border.all(color: item.colors.first, width: 2),
+  Widget build(BuildContext context) => Image.asset(
+        item.asset,
+        width: size,
+        height: size,
+        fit: BoxFit.contain,
+        errorBuilder: (_, __, ___) => Container(
+          width: size,
+          height: size,
+          decoration: BoxDecoration(shape: BoxShape.circle, gradient: LinearGradient(colors: item.colors)),
+          child: Icon(item.icon, color: Colors.white, size: size * 0.55),
         ),
-        child: IntrinsicHeight(
-          child: Row(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-            Container(
-              width: 44,
-              decoration: BoxDecoration(
-                gradient: LinearGradient(begin: Alignment.bottomCenter, end: Alignment.topCenter, colors: item.colors),
-              ),
-              child: Center(
-                child: RotatedBox(
-                  quarterTurns: 3,
-                  child: Text(item.name,
-                      maxLines: 1,
-                      style: const TextStyle(color: Colors.white, fontSize: 17, fontWeight: FontWeight.w700)),
-                ),
-              ),
+      );
+}
+
+/// Casella della Borsa: solo l'oggetto e quante ne hai. Toccandola si apre la scheda con
+/// descrizione e "Usa".
+class ItemTile extends StatelessWidget {
+  final ItemDef item;
+  final int qty;
+  final VoidCallback onTap;
+  const ItemTile({super.key, required this.item, required this.qty, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) => Tooltip(
+        message: item.name,
+        child: GestureDetector(
+          onTap: onTap,
+          child: Container(
+            width: 76,
+            height: 76,
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(18),
+              border: Border.all(color: item.colors.first, width: 2),
+              boxShadow: [BoxShadow(color: item.colors.first.withOpacity(0.18), blurRadius: 8, offset: const Offset(0, 3))],
             ),
-            Expanded(
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(14, 12, 8, 12),
-                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  Text(item.description,
-                      style: const TextStyle(fontStyle: FontStyle.italic, fontSize: 14, color: Colors.black87)),
-                  const SizedBox(height: 6),
-                  Text(item.usage, style: const TextStyle(fontSize: 12, color: Colors.black45)),
-                  const SizedBox(height: 8),
-                  FilledButton(
-                    style: FilledButton.styleFrom(
-                      backgroundColor: item.colors.first,
-                      visualDensity: VisualDensity.compact,
-                    ),
-                    onPressed: empty ? null : onUse,
-                    child: Text(_battleOnly(item) ? 'In battaglia' : 'Usa'),
+            child: Stack(clipBehavior: Clip.none, children: [
+              Center(child: ItemImage(item, size: 52)),
+              Positioned(
+                right: -6,
+                top: -6,
+                child: Container(
+                  constraints: const BoxConstraints(minWidth: 24),
+                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: item.colors.first,
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: Colors.white, width: 2),
                   ),
-                ]),
+                  child: Text('$qty',
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w800, fontSize: 12)),
+                ),
               ),
-            ),
-            Padding(
-              padding: const EdgeInsets.all(10),
-              child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-                Image.asset(
-                  item.asset,
-                  width: 64,
-                  height: 64,
-                  fit: BoxFit.contain,
-                  errorBuilder: (_, __, ___) => Container(
-                    width: 64,
-                    height: 64,
-                    decoration: BoxDecoration(shape: BoxShape.circle, gradient: LinearGradient(colors: item.colors)),
-                    child: Icon(item.icon, color: Colors.white, size: 34),
-                  ),
-                ),
-                const SizedBox(height: 6),
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
-                  decoration: BoxDecoration(color: item.colors.first, borderRadius: BorderRadius.circular(12)),
-                  child: Text('×$qty', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-                ),
-              ]),
-            ),
-          ]),
+            ]),
+          ),
         ),
-      ),
-    );
-  }
+      );
 }
 
 /// Strumenti che si usano solo in battaglia (Pozione e Super Pozione curano anche fuori).

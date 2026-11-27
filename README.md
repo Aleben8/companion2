@@ -46,20 +46,39 @@ Entrambe le modalità usano lo stesso progetto Firebase (`lib/firebase_options.d
 - La collezione `Tipi` esiste già; se mancasse, la app la crea all'avvio della partita.
 
 ### Come funziona il tavolo
-- **Turni.** All'avvio l'ordine è casuale. Ogni turno dà **2 azioni con un numero DISPARI di giocatori, 3 con un numero PARI**
-  (`kActionsOdd`/`kActionsEven` in `lib/mode.dart`). Chi gioca usa "Ho usato un'azione" per le azioni fatte al tavolo e
-  "Fine turno" per passare. Quando tutti hanno giocato il **giro** avanza. La barra in alto mostra giro, chi gioca e le azioni rimaste.
+- **Fasi del giorno (niente turni).** Chiunque agisce quando vuole. Ogni N azioni fatte da **tutto il gruppo** si passa
+  alla fase successiva: 🌅 Mattina → ☀️ Pomeriggio → 🌇 Sera → 🌙 Notte → mattina del giorno dopo. N lo sceglie il Master a
+  "Nuova partita" (consigliato: giocatori + 1, cioè circa un'azione a testa per fase). Il "giro" del resto del regolamento
+  **è la fase**: gli eventi si annunciano per fase ("nel pomeriggio", "fino a stasera", "domani mattina") e al cambio di fase
+  avanzano gli eventi e chi è in un rifugio recupera PS. Regole per agire (`lib/table/phases.dart`, `actBlock`):
+  1. **mai due volte di fila**: dopo una tua azione deve agire qualcun altro;
+  2. **mai due azioni uguali di fila** (es. "cerca" dopo "cerca", spostamento tra settori dopo spostamento tra settori);
+  3. **cambi di zona**: al massimo 2 al giorno e distanziati: se cambi zona la sera, la notte e la mattina dopo no, dal
+     pomeriggio sì (`kZoneMovesPerDay`, `kZoneMoveGap`);
+  4. chi è **fermo** (Trappola: finché il gruppo non fa altre 2 azioni; eventi che fanno perdere azioni) aspetta.
+  Le azioni che costano di più (settore impervio, eventi) contano doppio per il gruppo. Eludere chi ti ha notato e fuggire
+  dal selvatico contano per il gruppo ma non per le regole 1 e 2. La **Clessidra** ti fa agire subito una volta, anche di
+  fila. La scheda in cima alla tab Tavolo dice giorno, fase, quante azioni mancano alla prossima e se puoi agire (e perché no).
+  Stato: `state.actions`, `phaseActions`, `lastUid`; per giocatore `lastKind`, `zoneMoves`, `waitUntilAction`, `freeAction`.
+- **Per tornare ai turni** basta mettere `kTableTurns = true` in `lib/table/phases.dart`: ordine casuale, 2 azioni a turno con
+  un numero DISPARI di giocatori e 3 con un numero PARI (`kActionsOdd`/`kActionsEven`), "Fine turno", il giro avanza quando
+  tutti hanno giocato.
 - **Posizione.** Dopo aver mosso la pedina sul tabellone, il giocatore la sposta anche sulla **mappa** della tab
   **Tavolo**: tocca la zona, sceglie il settore nel pannello che compare sotto e conferma con un solo bottone
   ("Vai: zona, settore N · costo"). Ogni spostamento costa 1 azione (`kMoveActionCost`). Le posizioni sono private: le altre
   si scoprono con il Radar. Al tavolo si gioca **al massimo in 9** (`kMaxTablePlayers`).
-- **Schermata del Tavolo**, dall'alto: turno (azioni, "Fine turno"); le cose da risolvere subito (ti hanno notato, incontro
-  selvatico, messaggio dei locali, avvistamenti); **La tua posizione**: zona e settore, gli eventi della tua zona (con "Prendi
-  uno strumento" / "Sfida il leggendario"), poi **tutti i settori della zona**, ognuno con tipo, costo per andarci e stato
-  (bloccato da un evento, leggendario, chi hai avvistato lì, dove hai già cercato, la tua traccia, i tuoi indizi, la tua
-  Trappola o il tuo Allarme); toccandone uno ci vai ("Vai al settore N"). Sotto, cosa puoi fare nel tuo settore (Cerca
-  indizi, Emporio se è cittadino). Poi **Altre zone** (la mappa a pulsanti) e in fondo gli strumenti del Master.
-  Codice: `lib/screens/here_sectors.dart`.
+- **Schermata del Tavolo**, dall'alto: giorno e fase (o il turno, con i turni); le cose da risolvere subito (ti hanno notato,
+  incontro selvatico, messaggio dei locali, avvistamenti; per il Master le richieste ai locali); **La tua posizione** (zona,
+  settore attuale con le sue regole, eventi della zona con "Prendi uno strumento" / "Sfida il leggendario"); poi **tre
+  pulsanti** che aprono un pannello dal basso (`lib/screens/table_sheets.dart`):
+  - **Movimento**: i settori della tua zona, ognuno con tipo, costo e stato (bloccato, leggendario, avvistamenti, dove hai
+    già cercato, la tua traccia, i tuoi indizi, Trappola/Allarme), e sotto le **altre zone** (mappa a pulsanti). Dopo lo
+    spostamento il pannello si chiude.
+  - **Strumenti**: la Borsa, con in cima l'Emporio se sei in un settore cittadino.
+  - **Esplorazione**: **Cerca indizi** (1 azione), **Cerca tracce** (1 azione: chi è passato dal tuo settore di recente, da
+    dove è arrivato, dove è andato e chi ci ha cercato; la Lente vede di più), **Parla con i locali** (1 azione, vedi sotto).
+  Se un'azione non si può fare il bottone è grigio e dice perché. In fondo gli strumenti del Master (comprimibili).
+  Icone dei tre pulsanti provvisorie (Strumenti usa già `assets/images/borsa.png`).
 - **Mappa.** Un pulsante per ogni zona in gioco, con le miniature dei suoi settori (icona del tipo e numero; settori
   bloccati barrati, ⚡ dove c'è il leggendario, bordo sul settore dove sei) e, sotto il nome, gli eventi della zona
   ("⚠️ Frana nel Canyon · ancora 2 giri", "🔜 In arrivo: …"). Sono **colorate** le zone dove puoi andare adesso
@@ -67,7 +86,7 @@ Entrambe le modalità usano lo stesso progetto Firebase (`lib/firebase_options.d
   selezionabili le altre. Sul pulsante: "Tu", il costo in azioni oppure "Biglietto" / "Treno/traghetto", e un'icona per gli
   eventi in corso. Codice: `lib/screens/table_map.dart`, regola in `TableService.canReach`.
 - **Minuti -> giri.** Repellente 2 giri, recupero dopo la sconfitta 1 giro, divieto di riaffrontarsi dopo una fuga 2 giri,
-  Trappola = si salta il turno successivo (valori in `lib/items.dart`).
+  Trappola = fermo finché gli altri non fanno 2 azioni (con i turni: si salta il turno successivo) (valori in `lib/items.dart`).
 - **Strumenti.** Radar mostra zona e settore degli altri, Calmanella rivela la tua zona, Trappola si piazza nel tuo settore e scatta
   quando qualcuno ci entra, Fune di fuga la annulla.
 - **Eventi di zona** (`lib/table/events.dart`). All'avvio ne vengono estratti 5 più un leggendario e sono pianificati dal giro 3, uno ogni
@@ -123,7 +142,7 @@ Distribuzione di partenza (30 settori):
 | **Cittadino** | Qui c'è l'emporio (l'Emporio si apre solo in un settore cittadino). Nessun incontro selvatico. Locali: CD −2. Tracce: forza −1 (minimo 1). |
 | **Selvaggio** | Entrando, 25% di incontrare un Pokémon selvatico del tipo della zona (forza simile alla tua, NPC come nelle palestre). Si sceglie: affrontarlo (vittoria: `kCoinsWild` monete e 25% di uno strumento) o fuggire (1 azione; se non ne hai, la perdi al turno dopo). Finché non scegli non puoi muoverti né cercare. |
 | **Impervio** | Entrare nel settore costa +1 azione. Tracce: forza +1. *Cerca* trova uno strumento al 30% invece del 15%. Qui compare il leggendario. Locali: CD +2. |
-| **Rifugio** | A inizio turno chi è qui recupera 5 PS. Nessuno può sfidarlo a battaglia (né lui può combattere contro altri giocatori da qui); il Radar lo vede comunque. Locali: CD −1. |
+| **Rifugio** | A ogni nuova fase del giorno chi è qui recupera 5 PS. Nessuno può sfidarlo a battaglia (né lui può combattere contro altri giocatori da qui); il Radar lo vede comunque. Locali: CD −1. |
 | **Passaggio** | Da qui partono e qui arrivano Biglietto, treno e traghetto. Tracce: forza +1. |
 
 ### Furtività: entrare in un settore dove c'è qualcuno
@@ -143,13 +162,13 @@ il precedente), e a te compare la scheda **"Ti hanno notato!"**: non puoi muover
 ### Tracce e informazioni dai locali
 
 - **Forza delle tracce.** Ogni spostamento e ogni ricerca lascia una traccia di forza 1–3: base 1, **+1 con la spunta "Lascia una traccia ben visibile"** (nel pannello di spostamento), più il modificatore del settore. La Lente vede una traccia per *forza × 2* giri e ne dice la forza (debole, chiara, evidente). Costanti in `lib/table/sectors.dart`.
-- **Informazioni dai locali** (riquadro Master, a partita in corso, in **qualsiasi** settore; è l'unico bottone che resta
-  fuori dagli strumenti del Master, che sono comprimibili). Il Master sceglie il giocatore: la finestra dice solo il
-  **modificatore di CD** del settore (cittadino −2, rifugio −1, selvaggio 0, impervio +2, passaggio 0). Il tiro si fa al
-  tavolo e il Master risponde "Sì" o "No" alla domanda "ha superato la CD?". Il racconto dei locali (chi è passato nella zona
-  negli ultimi 3 giri con la forza della traccia, gli eventi in arrivo, se qualcuno ha nascosto indizi lì) lo vede **solo il
-  giocatore**, in una scheda nella sua tab Tavolo: il Master, che gioca, non lo legge. Codice: `TableService.localsCheck` e
-  `sendLocals` (salva su `Users/{uid}.localsInfo`).
+- **Parla con i locali** (Esplorazione, 1 azione, in **qualsiasi** settore). La richiesta arriva al Master in cima alla sua tab
+  Tavolo ("Richieste ai locali") con il settore del giocatore e solo il **modificatore di CD** (cittadino −2, rifugio −1,
+  selvaggio 0, impervio +2, passaggio 0). Il tiro si fa al tavolo e il Master risponde "Sì" o "No" a "ha superato la CD?".
+  Il racconto dei locali (chi è passato nella zona di recente con la forza della traccia, gli eventi in arrivo, se qualcuno ha
+  nascosto indizi lì) lo vede **solo il giocatore**, in una scheda nella sua tab Tavolo: il Master, che gioca, non lo legge.
+  Codice: `TableService.requestLocals`, `answerLocals` (richieste in `Party/{codice}/localsRequests`, risposta su
+  `Users/{uid}.localsInfo`).
 
 ### Proposta per il futuro (non fatta): una mappa con più settori
 
@@ -346,7 +365,7 @@ Tutte le regole numeriche sono in `lib/items.dart` (costanti `k...`).
 | Categoria | Strumenti |
 |---|---|
 | Base | Repellente, Caramella Rara, Fune di fuga, Trappola, Pozione, Calmanella, Revitalizzante, Radar |
-| Esplorazione | **Lente** (tracce: zone già battute e direzioni degli altri), **Sensore** (quanti indizi nascosti qui), **Allarme** (come la Trappola ma avvisa in segreto, non blocca), **Radar meteo** (eventi dei prossimi 2 giri), **Passo felpato** (ignora Trappole/Allarmi, nessuna traccia, invisibile al Radar), **Clessidra** (al tavolo azioni extra nel turno, dal vivo azzera le attese), **Chiave** (sblocca un settore chiuso da frana/marea) |
+| Esplorazione | **Lente** (tracce: zone già battute e direzioni degli altri), **Sensore** (quanti indizi nascosti qui), **Allarme** (come la Trappola ma avvisa in segreto, non blocca), **Radar meteo** (eventi dei prossimi 2 giri), **Passo felpato** (ignora Trappole/Allarmi, nessuna traccia, invisibile al Radar), **Clessidra** (al tavolo agisci subito una volta, anche di fila; dal vivo azzera le attese), **Chiave** (sblocca un settore chiuso da frana/marea) |
 | Battaglia | **Elisir** (+5 energie), **Super Pozione** (+20 PS), **Antidoto** (toglie DOT e malus), **Amuleto** (blocca il primo status, da dichiarare prima del 1º turno), **Guanto** (+2 danno per uno scontro, da dichiarare prima del 1º turno) |
 | Protezioni di bioma | Corda da scalata (Canyon), Bussola (Giungla), Tuta da neve (Regione innevata), Tuta ignifuga (Vulcano), Zattera (Isola), Parafulmine (Colline): per 2 giri annullano gli effetti dell'evento di quella zona (costo extra, settori bloccati, azioni perse, nebbia per il tuo Radar, bonus di tipo) |
 

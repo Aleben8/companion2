@@ -6,6 +6,7 @@ import 'package:geolocator/geolocator.dart';
 import '../geo.dart';
 import '../items.dart';
 import '../mode.dart';
+import '../table/phases.dart';
 import '../table/sectors.dart';
 import '../table/zones.dart';
 import 'live_service.dart';
@@ -133,7 +134,7 @@ class ItemService {
     if (isActive(me['koUntil'])) {
       throw Exception('Il tuo Pokémon è esausto: aspetta il recupero o usa un Revitalizzante');
     }
-    if (isActive(me['trappedUntil']) || ((me['trappedSkip'] as num?) ?? 0) > 0) {
+    if (isActive(me['trappedUntil']) || ((me['trappedSkip'] as num?) ?? 0) > 0 || isWaiting(me)) {
       throw Exception('Sei bloccato in una Trappola');
     }
     if (isActive(me['repellentUntil'])) {
@@ -144,7 +145,7 @@ class ItemService {
     if (isActive(opp['repellentUntil'])) {
       throw Exception("L'avversario è protetto da un Repellente");
     }
-    if (isActive(opp['koUntil']) || isActive(opp['trappedUntil']) || ((opp['trappedSkip'] as num?) ?? 0) > 0) {
+    if (isActive(opp['koUntil']) || isActive(opp['trappedUntil']) || ((opp['trappedSkip'] as num?) ?? 0) > 0 || isWaiting(opp)) {
       throw Exception("L'avversario non è disponibile");
     }
     final blocks = me['fleeBlocks'];
@@ -152,6 +153,10 @@ class ItemService {
       throw Exception('Siete appena usciti da uno scontro: non potete affrontarvi subito');
     }
   }
+
+  /// Fasi del giorno: il giocatore è fermo (Trappola, eventi) finché il gruppo non arriva a `waitUntilAction` azioni.
+  static bool isWaiting(Map<String, dynamic>? u) =>
+      kTableMode && ((u?['waitUntilAction'] as num?)?.toInt() ?? 0) > TableClock.actions;
 
   /// Sconfitta: il Pokémon è esausto (minuti dal vivo, giri al tavolo).
   static Future<void> setKo(String uid) => userRef(uid)
@@ -172,6 +177,10 @@ class ItemService {
   /// Fune di fuga contro la Trappola: annulla il blocco.
   static Future<void> useRopeOnTrap(String uid) => _consume(uid, ItemId.fune, effect: (u) {
         if (kTableMode) {
+          if (!kTableTurns) {
+            if (!isWaiting(u)) throw Exception('Non sei in una trappola');
+            return {'waitUntilAction': FieldValue.delete()};
+          }
           if (((u['trappedSkip'] as num?) ?? 0) <= 0) throw Exception('Non sei in una trappola');
           return {'trappedSkip': 0};
         }
@@ -474,7 +483,7 @@ class ItemService {
       for (final t in recent.where((t) => t['kind'] == 'move')) {
         final dest = '${zoneSpec('${t['zone']}').name}, settore ${t['sector']}';
         final from = '${zoneSpec('${t['fromZone']}').name}, settore ${t['fromSector']}';
-        final how = 'giro ${t['round']}, traccia ${traceStrengthLabel(strength(t))}';
+        final how = '${roundRef(t['round'])}, traccia ${traceStrengthLabel(strength(t))}';
         if (t['fromZone'] == me!['zone'] && t['fromSector'] == me['sector']) {
           moves.add('${t['uid']} è partito da qui verso $dest ($how)');
         } else if (t['zone'] == me['zone'] && t['sector'] == me['sector']) {
@@ -579,7 +588,9 @@ class ItemService {
       if (start <= round || start > round + kWeatherLookahead) continue;
       final inN = start - round;
       rows.add(MapEntry(start,
-          '${e['name']} — ${zoneSpec('${e['zone']}').name}, tra $inN ${inN == 1 ? 'giro' : 'giri'} (giro $start)'));
+          kTableMode && !kTableTurns
+              ? '${e['name']} — ${zoneSpec('${e['zone']}').name}, ${whenLabel(start, round)}'
+              : '${e['name']} — ${zoneSpec('${e['zone']}').name}, tra $inN ${inN == 1 ? 'giro' : 'giri'} (giro $start)'));
     }
     rows.sort((a, b) => a.key.compareTo(b.key));
     return rows.map((r) => r.value).toList();
@@ -618,6 +629,10 @@ class ItemService {
     }
     await TableService.assertMyTurn(party, uid);
     await _consume(uid, ItemId.clessidra);
+    if (!kTableTurns) {
+      await TableService.grantFreeAction(uid); // fasi del giorno: puoi agire subito, anche di fila
+      return;
+    }
     await TableService.grantActions(party, uid);
   }
 

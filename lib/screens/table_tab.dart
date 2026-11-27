@@ -16,13 +16,12 @@ import '../services/session.dart';
 import '../services/table_service.dart';
 import '../items.dart';
 import '../table/events.dart';
+import '../table/phases.dart';
 import '../table/sectors.dart';
 import '../table/zones.dart';
 import 'shop_sheet.dart';
-import 'here_sectors.dart';
-import 'table_map.dart';
+import 'table_sheets.dart';
 import '../theme.dart';
-import '../widgets/clue_search.dart';
 import '../widgets/common.dart';
 import '../widgets/drop.dart';
 import '../widgets/game_status.dart';
@@ -116,6 +115,7 @@ class _TableTabState extends State<TableTab> {
     }
     final links = await TableService.partyLinks(_party!);
     var sel = TableService.drawBiomes(players).toSet();
+    var perPhase = suggestedPhaseActions(players); // fasi del giorno: azioni del gruppo per fase
     if (!mounted) return;
     final biomes = await showDialog<List<String>>(
       context: context,
@@ -129,9 +129,32 @@ class _TableTabState extends State<TableTab> {
               Text(
                 '$players giocatori: l’Hub più ${min(7, players + 1)} biomi estratti a caso. Puoi cambiarli. '
                 '${started ? 'Giro, posizioni, trappole, eventi e indizi ripartono da zero: ognuno ridispone i suoi indizi (strumenti e badge restano). ' : ''}'
-                'Tutti partono dall’Hub e l’ordine dei turni è sorteggiato.',
+                '${kTableTurns ? 'Tutti partono dall’Hub e l’ordine dei turni è sorteggiato.' : 'Tutti partono dall’Hub. Non ci sono turni: si gioca a fasi del giorno.'}',
                 style: const TextStyle(fontSize: 12, color: Pal.sub),
               ),
+              if (!kTableTurns) ...[
+                const SizedBox(height: 12),
+                const Text('Azioni per fase del giorno', style: TextStyle(fontWeight: FontWeight.w800)),
+                Row(children: [
+                  IconButton(
+                    onPressed: perPhase > kMinPhaseActions ? () => set(() => perPhase--) : null,
+                    icon: const Icon(Icons.remove_circle_outline),
+                  ),
+                  Text('$perPhase', style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w800)),
+                  IconButton(
+                    onPressed: perPhase < kMaxPhaseActions ? () => set(() => perPhase++) : null,
+                    icon: const Icon(Icons.add_circle_outline),
+                  ),
+                ]),
+                Text(
+                  'Ogni $perPhase azioni fatte da tutto il gruppo si passa alla fase successiva '
+                  '(mattina → pomeriggio → sera → notte). Consigliato: ${suggestedPhaseActions(players)} '
+                  '(una a testa più una), così ognuno agisce circa una volta per fase.',
+                  style: const TextStyle(fontSize: 12, color: Pal.sub),
+                ),
+                const SizedBox(height: 8),
+                const Text('Zone in gioco', style: TextStyle(fontWeight: FontWeight.w800)),
+              ],
               for (final z in kZones)
                 CheckboxListTile(
                   dense: true,
@@ -164,7 +187,8 @@ class _TableTabState extends State<TableTab> {
       }),
     );
     if (biomes == null) return;
-    await _run(() => TableService.startGame(_party!, manualEvents: _manualNext, biomes: biomes), ok: 'Partita avviata!');
+    await _run(() => TableService.startGame(_party!, manualEvents: _manualNext, biomes: biomes, phaseActions: perPhase),
+        ok: 'Partita avviata!');
   }
 
   /// Master: tipo e numero dei settori di ogni zona.
@@ -244,53 +268,6 @@ class _TableTabState extends State<TableTab> {
       ),
     );
     if (save == true) await _run(() => TableService.setSectorTypes(_party!, work), ok: 'Settori salvati');
-  }
-
-  /// Master: un giocatore chiede informazioni ai locali (in qualsiasi settore). La finestra dice solo
-  /// il modificatore di CD del settore; il tiro si fa al tavolo e il Master dice se è riuscito.
-  /// Il racconto dei locali lo vede solo il giocatore (il Master, che gioca, non lo legge).
-  Future<void> _askLocals(Map<String, dynamic> st) async {
-    final order = st['order'] is List ? List<String>.from(st['order'] as List) : <String>[];
-    final who = await showDialog<String>(
-      context: context,
-      builder: (ctx) => SimpleDialog(title: const Text('Chi chiede ai locali?'), children: [
-        for (final p in order) SimpleDialogOption(onPressed: () => Navigator.pop(ctx, p), child: Text(p)),
-      ]),
-    );
-    if (who == null || !mounted) return;
-    LocalsCheck check;
-    try {
-      check = await TableService.localsCheck(_party!, who);
-    } catch (e) {
-      if (mounted) snack(context, '$e'.replaceFirst('Exception: ', ''), error: true);
-      return;
-    }
-    if (!mounted) return;
-    final m = check.cdModifier;
-    final success = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: Text('Informazioni dai locali · $who'),
-        content: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Text(check.place, style: const TextStyle(color: Pal.sub, fontSize: 12)),
-          const SizedBox(height: 10),
-          Text('Modificatore di CD: ${m == 0 ? 'nessuno' : (m > 0 ? '+$m' : '−${-m}')}',
-              style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w800)),
-          const SizedBox(height: 12),
-          Text('$who ha superato la CD?', style: const TextStyle(fontWeight: FontWeight.w700)),
-          const SizedBox(height: 4),
-          const Text('Quello che raccontano i locali lo vedrà solo il giocatore.',
-              style: TextStyle(color: Pal.sub, fontSize: 12)),
-        ]),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Annulla')),
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('No')),
-          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Sì')),
-        ],
-      ),
-    );
-    if (success == null) return;
-    await _run(() => TableService.sendLocals(_party!, who, success: success), ok: 'Inviato a $who');
   }
 
   /// Il messaggio dei locali (lo vede solo chi ha chiesto).
@@ -380,7 +357,7 @@ class _TableTabState extends State<TableTab> {
                 Padding(
                   padding: const EdgeInsets.only(bottom: 4),
                   child: Text('👀 ${r['uid']} è entrato nel tuo settore '
-                      '(${zoneSpec('${r['zone']}').name}, settore ${r['sector']}) · giro ${r['round']}'),
+                      '(${zoneSpec('${r['zone']}').name}, settore ${r['sector']}) · ${roundRef(r['round'])}'),
                 ),
             ]),
           );
@@ -519,19 +496,6 @@ class _TableTabState extends State<TableTab> {
   void _move(ZoneSpec z, int sector, Map<String, dynamic> st, List<Map<String, dynamic>> events, Map? pos) =>
       snack(context, 'Dal vivo ti sposti camminando: zona e settore li decide il GPS');
 
-  /// Tavolo: conferma dal pannello dei settori della mappa (il costo è già scritto sul bottone).
-  Future<void> _moveTo(ZoneSpec z, int sector, {required bool ticket, required bool visibleTrace}) => _run(() async {
-        final msg = await TableService.moveTo(
-          party: _party!,
-          uid: _s.userName!,
-          zone: z.id,
-          sector: sector,
-          useTicket: ticket,
-          visibleTrace: visibleTrace,
-        );
-        if (msg != null && mounted) snack(context, msg, error: true);
-      });
-
   // ---------------------------------------------------------------------- UI
 
   @override
@@ -560,8 +524,7 @@ class _TableTabState extends State<TableTab> {
             return StreamBuilder<Map<String, dynamic>?>(
               stream: PartyService.watchParty(_party!),
               builder: (context, pSnap) => StreamBuilder<Map<String, dynamic>>(
-              stream: ItemService.watchUserFields(
-                  me, const ['pos', 'shield', 'busyUntil', 'searchReadyAt', 'wildEncounter', 'spotted', 'inventory', 'localsInfo', 'ticketReturn']),
+              stream: ItemService.watchUserFields(me, kTableUserFields),
               builder: (context, uSnap) {
                 final pos = uSnap.data?['pos'] as Map?;
                 _shield = ItemService.shieldZone(uSnap.data);
@@ -571,7 +534,7 @@ class _TableTabState extends State<TableTab> {
                   TableLayout.sectors = TableService.sectorsOf(st, pSnap.data);
                   TableLayout.biomes = started ? TableService.biomesOf(st) : null;
                 }
-                final myTurn = st?['order'] is List && List<String>.from(st!['order'] as List)[_i(st['idx'])] == me;
+                TableClock.actions = _i(st?['actions']); // fasi del giorno: azioni del gruppo
                 final wild = uSnap.data?['wildEncounter'] as Map?;
                 final locals = uSnap.data?['localsInfo'] as Map?;
                 final spotted = uSnap.data?['spotted'] as Map?;
@@ -590,35 +553,28 @@ class _TableTabState extends State<TableTab> {
                       ),
                     )
                   else ...[
-                    if (table && st!['order'] is List) _turnCard(st, me) else if (!table) _clockCard(st!, uSnap.data),
+                    // le azioni stanno in tre pannelli che salgono dal basso: in cima, sopra il giorno
+                    if (table) _actionTiles(me),
+                    if (table && !kTableTurns)
+                      _phaseCard(st!, uSnap.data, me)
+                    else if (table && st!['order'] is List)
+                      _turnCard(st, me)
+                    else if (!table)
+                      _clockCard(st!, uSnap.data),
                     // prima quello che va risolto subito, poi dove sei e cosa puoi fare
                     if (table && spotted != null) _spottedCard(spotted, ropes),
                     if (table && wild != null) _wildCard(wild),
                     if (table && locals != null) _localsCard(locals, me),
                     if (table) _sightings(me, _i(st!['round'])),
-                    if (table)
-                      _positionCard(pos, st: st, events: events, me: me, myTurn: myTurn, pending: wild != null || spotted != null)
-                    else
-                      _positionCard(pos),
-                    // al tavolo gli eventi delle altre zone stanno sui pulsanti della mappa e nella fascia in alto
-                    if (!table) ..._eventCards(events, st!, pos, me),
-                    SectionTitle(table ? 'Altre zone' : 'Zone'),
+                    if (table && _master) _localsRequests(),
                     if (table) ...[
-                      TableMap(
-                        state: st!,
-                        events: events,
-                        pos: pos,
-                        shield: _shield,
-                        myTurn: myTurn,
-                        actionsLeft: _i(st['actionsLeft']),
-                        wildPending: wild != null || spotted != null,
-                        ticketCount: ItemService.readInventory(uSnap.data)['biglietto'] ?? 0,
-                        freeReturn: TableService.freeReturnZone(uSnap.data?['ticketReturn'] as Map?, pos),
-                        busy: _busy,
-                        onMove: _moveTo,
-                      ),
-                    ] else
-                      for (final z in kZones) _zoneCard(z, pos, events, st!, me),
+                      _positionCard(pos, st: st, events: events, me: me),
+                    ] else ...[
+                      _positionCard(pos),
+                      ..._eventCards(events, st!, pos, me),
+                      const SectionTitle('Zone'),
+                      for (final z in kZones) _zoneCard(z, pos, events, st, me),
+                    ],
                     if (_master && table) ...[const SizedBox(height: 16), _masterTools(started, st, events)],
                   ],
                 ]);
@@ -639,17 +595,6 @@ class _TableTabState extends State<TableTab> {
       label: 'Master',
       labelOnTop: true,
       child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-        // fuori dalla parte comprimibile: è l'unico strumento che si usa spesso durante la partita
-        if (kTableMode && started) ...[
-          DropButton(
-            label: 'Informazioni dai locali',
-            icon: Icons.record_voice_over,
-            colors: Pal.gold,
-            height: 44,
-            onTap: _busy ? null : () => _askLocals(st!),
-          ),
-          const SizedBox(height: 4),
-        ],
         Material(
           type: MaterialType.transparency,
           child: ListTile(
@@ -857,6 +802,58 @@ class _TableTabState extends State<TableTab> {
     );
   }
 
+  /// Fasi del giorno: in che fase siamo, quante azioni mancano alla prossima e cosa puoi fare tu.
+  Widget _phaseCard(Map<String, dynamic> st, Map<String, dynamic>? user, String me) {
+    final round = max(1, _i(st['round']));
+    final per = (_i(st['phaseActions']) < 1 ? 4 : _i(st['phaseActions']));
+    final done = _i(st['actions']) % (per < 1 ? 1 : per);
+    final general = actBlock(state: st, user: user, uid: me, kind: '_');
+    final last = user?['lastKind'] as String?;
+    final moves = [for (final m in (user?['zoneMoves'] as List? ?? const [])) _i(m)];
+    final today = moves.where((m) => dayOf(m) == dayOf(round)).length;
+    final zoneBlock = actBlock(state: st, user: user, uid: me, kind: ActKind.zone);
+    final lastUid = st['lastUid'] as String?;
+    return DropCard(
+      colors: const [Color(0xFF5B6B8C), Color(0xFF9AA8C7)],
+      label: 'Giorno ${dayOf(round)}',
+      labelOnTop: true,
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Text('${phaseIcon(round)} ${phaseName(round)}', style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w800)),
+        const SizedBox(height: 8),
+        Row(children: [
+          for (var i = 0; i < per; i++)
+            Padding(
+              padding: const EdgeInsets.only(right: 5),
+              child: Icon(i < done ? Icons.circle : Icons.circle_outlined, size: 16, color: i < done ? Pal.warn : Pal.line),
+            ),
+          const SizedBox(width: 4),
+          Flexible(
+            child: Text(
+              '${per - done} ${per - done == 1 ? 'azione' : 'azioni'} a ${phaseName(round + 1).toLowerCase()}',
+              style: const TextStyle(color: Pal.sub, fontWeight: FontWeight.w700, fontSize: 13),
+            ),
+          ),
+        ]),
+        const SizedBox(height: 10),
+        Text(
+          general == null ? '✅ Puoi agire' : '⏳ $general',
+          style: TextStyle(fontWeight: FontWeight.w800, color: general == null ? Pal.ok : Pal.sub),
+        ),
+        if (user?['freeAction'] == true)
+          const Text('⌛ Clessidra: la prossima azione è libera', style: TextStyle(fontSize: 12)),
+        if (general == null && last != null && user?['freeAction'] != true)
+          Text('Ora non puoi ${ActKind.label(last)}: l’hai appena fatto', style: const TextStyle(color: Pal.sub, fontSize: 12)),
+        Text(
+          'Cambi di zona oggi: $today/$kZoneMovesPerDay'
+          '${zoneBlock != null && general == null && today < kZoneMovesPerDay ? ' · $zoneBlock' : ''}',
+          style: const TextStyle(color: Pal.sub, fontSize: 12),
+        ),
+        if (lastUid != null)
+          Text('Ultimo ad agire: ${lastUid == me ? 'tu' : lastUid}', style: const TextStyle(color: Pal.sub, fontSize: 12)),
+      ]),
+    );
+  }
+
   Widget _turnCard(Map<String, dynamic> st, String me) {
     final order = List<String>.from(st['order'] as List);
     final current = order[_i(st['idx'])];
@@ -881,20 +878,7 @@ class _TableTabState extends State<TableTab> {
         ]),
         const SizedBox(height: 12),
         if (mine)
-          Row(children: [
-            Expanded(
-              child: DropButton(
-                label: 'Ho usato un’azione',
-                colors: Pal.neutral,
-                height: 44,
-                onTap: _busy || left == 0 ? null : () => _run(() => TableService.spendAction(_party!, me)),
-              ),
-            ),
-            const SizedBox(width: 10),
-            Expanded(
-              child: DropButton(label: 'Fine turno', icon: Icons.skip_next, height: 44, onTap: _busy ? null : () => _endTurn(st)),
-            ),
-          ])
+          DropButton(label: 'Fine turno', icon: Icons.skip_next, height: 44, onTap: _busy ? null : () => _endTurn(st))
         else
           Wrap(spacing: 6, runSpacing: 6, children: [
             for (final p in order) InfoChip(p, color: p == current ? Pal.accent : Pal.sub),
@@ -903,76 +887,138 @@ class _TableTabState extends State<TableTab> {
     );
   }
 
+  /// I tre blocchi del Tavolo: ognuno apre il suo pannello dal basso.
+  /// Icone provvisorie (Strumenti usa già la borsa del giocatore): da sostituire con quelle fornite.
+  Widget _actionTiles(String me) {
+    Widget tile(TableSheet which, String label, String sub, Widget icon, List<Color> colors) => Expanded(
+          child: GestureDetector(
+            onTap: () => showTableSheet(context, which, party: _party!, me: me),
+            child: Container(
+              margin: const EdgeInsets.symmetric(horizontal: 4),
+              padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 6),
+              decoration: BoxDecoration(
+                gradient: LinearGradient(colors: colors, begin: Alignment.topLeft, end: Alignment.bottomRight),
+                borderRadius: BorderRadius.circular(20),
+                boxShadow: [BoxShadow(color: colors.first.withOpacity(0.35), blurRadius: 10, offset: const Offset(0, 4))],
+              ),
+              child: Column(children: [
+                SizedBox(height: 34, child: Center(child: icon)),
+                const SizedBox(height: 6),
+                Text(label, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w800, fontSize: 14)),
+                Text(sub,
+                    textAlign: TextAlign.center,
+                    style: TextStyle(color: Colors.white.withOpacity(0.85), fontSize: 10.5, height: 1.2)),
+              ]),
+            ),
+          ),
+        );
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 10),
+      // IntrinsicHeight + stretch: i tre pulsanti hanno sempre la stessa altezza
+      child: IntrinsicHeight(
+        child: Row(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+        tile(TableSheet.movement, 'Movimento', 'settori e zone',
+            const Icon(Icons.directions_walk, color: Colors.white, size: 30), const [Color(0xFF4F8FE0), Color(0xFF7FB8F0)]),
+        tile(TableSheet.tools, 'Strumenti', 'borsa ed emporio',
+            Image.asset('assets/images/borsa.png', width: 30, height: 30, color: Colors.white), Pal.gold),
+        tile(TableSheet.explore, 'Esplorazione', 'indizi, tracce, locali',
+            const Icon(Icons.travel_explore, color: Colors.white, size: 30), const [Color(0xFF8E6BD8), Color(0xFFD08AE0)]),
+        ]),
+      ),
+    );
+  }
+
+  /// Master: richieste "Parla con i locali" in attesa. Vede solo il modificatore di CD; il racconto
+  /// lo riceve solo il giocatore.
+  Widget _localsRequests() => StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+        stream: TableService.watchLocalsRequests(_party!),
+        builder: (context, snap) {
+          final reqs = snap.data?.docs ?? const <QueryDocumentSnapshot<Map<String, dynamic>>>[];
+          if (reqs.isEmpty) return const SizedBox.shrink();
+          return DropCard(
+            colors: Pal.gold,
+            label: 'Richieste ai locali',
+            labelOnTop: true,
+            child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+              for (final r in reqs)
+                FutureBuilder<LocalsCheck>(
+                  future: TableService.localsCheck(_party!, '${r.data()['uid']}'),
+                  builder: (context, c) {
+                    final uid = '${r.data()['uid']}';
+                    final m = c.data?.cdModifier ?? 0;
+                    return Padding(
+                      padding: const EdgeInsets.only(bottom: 10),
+                      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                        Text('$uid chiede ai locali', style: const TextStyle(fontWeight: FontWeight.w800)),
+                        if (c.data != null)
+                          Text('${c.data!.place} · modificatore di CD: ${m == 0 ? 'nessuno' : (m > 0 ? '+$m' : '−${-m}')}',
+                              style: const TextStyle(color: Pal.sub, fontSize: 12)),
+                        const SizedBox(height: 4),
+                        Row(children: [
+                          Expanded(child: Text('Ha superato la CD?', style: const TextStyle(fontSize: 13))),
+                          TextButton(
+                            onPressed: _busy
+                                ? null
+                                : () => _run(() => TableService.answerLocals(_party!, r.id, uid, success: false),
+                                    ok: 'Risposta inviata a $uid'),
+                            child: const Text('No'),
+                          ),
+                          FilledButton(
+                            onPressed: _busy
+                                ? null
+                                : () => _run(() => TableService.answerLocals(_party!, r.id, uid, success: true),
+                                    ok: 'Risposta inviata a $uid'),
+                            child: const Text('Sì'),
+                          ),
+                        ]),
+                      ]),
+                    );
+                  },
+                ),
+            ]),
+          );
+        },
+      );
+
   /// "La tua posizione": dove sei, che settore è e tutto quello che puoi fare qui
   /// (cercare indizi, emporio, eventi della zona con le loro azioni). Per spostarti c'è la mappa sotto.
   Widget _positionCard(Map? pos,
-      {Map<String, dynamic>? st, List<Map<String, dynamic>> events = const [], String? me, bool myTurn = false, bool pending = false}) {
+      {Map<String, dynamic>? st,
+      List<Map<String, dynamic>> events = const [],
+      String? me,
+      }) {
     final z = pos == null ? null : zoneSpec('${pos['zone']}');
-    final type = kTableMode && z != null ? TableLayout.typeOf(z.id, _i(pos!['sector'])) : null;
     final table = kTableMode && st != null && me != null;
-    final shopClosed = kTableMode ? tableShopClosedReason(pos) : null;
     return DropCard(
       colors: typeColors(z?.type),
       label: 'La tua posizione',
       labelOnTop: true,
       child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-        Row(children: [
-          if (type != null) ...[Icon(type.icon, size: 26, color: Pal.ink), const SizedBox(width: 8)],
-          Expanded(
-            child: Text(
-              z == null
-                  ? (kTableMode ? 'Non ancora sulla mappa' : 'Fuori dalle zone di gioco')
-                  : '${z.name} · ${kTableMode ? 'settore ${pos!['sector']}' : LiveService.sectorLabel(z.id, pos!['sector'])}',
-              style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
-            ),
-          ),
-        ]),
-        if (!kTableMode)
-          const Text('La aggiorna il GPS mentre cammini.', style: TextStyle(color: Pal.sub, fontSize: 12))
-        else if (type != null)
-          Padding(
-            padding: const EdgeInsets.only(top: 4),
-            child: Text('${type.label}: ${type.rules}', style: const TextStyle(color: Pal.sub, fontSize: 12)),
-          ),
+        // al tavolo solo la zona: il settore in cui sei è evidenziato nella lista dei settori qui sotto
+        Text(
+          z == null
+              ? (kTableMode ? 'Non ancora sulla mappa' : 'Fuori dalle zone di gioco')
+              : (kTableMode ? z.name : '${z.name} · ${LiveService.sectorLabel(z.id, pos!['sector'])}'),
+          style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
+        ),
+        if (!kTableMode) const Text('La aggiorna il GPS mentre cammini.', style: TextStyle(color: Pal.sub, fontSize: 12)),
         if (table && z != null) ...[
+          Builder(builder: (_) {
+            final t = TableLayout.typeOf(z.id, _i(pos!['sector']));
+            if (t == null) return const SizedBox.shrink();
+            return Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Icon(t.icon, size: 18, color: Pal.sub),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text('${t.label} ${pos['sector']} · ${t.rules}', style: const TextStyle(color: Pal.sub, fontSize: 12)),
+                ),
+              ]),
+            );
+          }),
           // eventi della tua zona (con le loro azioni)
           ..._eventCards(events, st, pos, me, onlyHere: true, inCard: true),
-          const SizedBox(height: 12),
-          HereSectors(
-            party: _party!,
-            me: me,
-            state: st,
-            events: events,
-            pos: pos!,
-            shield: _shield,
-            myTurn: myTurn,
-            actionsLeft: _i(st['actionsLeft']),
-            pending: pending,
-            busy: _busy,
-            onMove: _moveTo,
-          ),
-          const SizedBox(height: 8),
-          Text('Cosa puoi fare nel settore ${pos['sector']}', style: const TextStyle(fontWeight: FontWeight.w800)),
-          ClueSearchButton(party: _party!, uid: me, enabled: myTurn),
-          if (shopClosed == null)
-            DropButton(
-              label: 'Emporio',
-              icon: Icons.storefront,
-              colors: Pal.gold,
-              height: 44,
-              onTap: () => showShop(context, me),
-            )
-          else
-            Padding(
-              padding: const EdgeInsets.only(top: 2),
-              child: Row(children: [
-                const Icon(Icons.storefront, size: 16, color: Pal.sub),
-                const SizedBox(width: 6),
-                Expanded(child: Text('Emporio chiuso qui · $shopClosed', style: const TextStyle(color: Pal.sub, fontSize: 12))),
-              ]),
-            ),
-          const SizedBox(height: 8),
-          const Text('Per andare in un’altra zona usa la mappa qui sotto.', style: TextStyle(color: Pal.sub, fontSize: 12)),
         ] else if (!kTableMode) ...[
           const SizedBox(height: 10),
           DropButton(
@@ -1009,7 +1055,14 @@ class _TableTabState extends State<TableTab> {
           final here = pos?['zone'] == e['zone'];
           final claimed = (e['claimedBy'] as List? ?? []).contains(me);
           final defeated = e['defeatedBy'] != null;
-          final when = active
+          final when = kTableMode && !kTableTurns
+              // fasi del giorno: "fino a stasera", "nel pomeriggio"
+              ? (active
+                  ? 'Dura ${untilLabel(_i(e['endRound']), round)}'
+                  : (_i(e['startRound']) >= TableService.kManualStart
+                      ? 'Il Master lo attiverà a breve'
+                      : 'Arriva ${whenLabel(_i(e['startRound']), round)}'))
+              : active
               ? 'Ancora ${_i(e['endRound']) - round + 1} ${_i(e['endRound']) - round + 1 == 1 ? 'giro' : 'giri'}'
               : (_i(e['startRound']) >= TableService.kManualStart
                   ? 'Il Master lo attiverà a breve'
@@ -1190,6 +1243,31 @@ class _TableTabState extends State<TableTab> {
 class TurnBar extends StatelessWidget {
   const TurnBar({super.key});
 
+  /// Fasi del giorno: giorno, fase e azioni che mancano alla prossima.
+  Widget _phaseBar(Map<String, dynamic> st) {
+    final round = max(1, _i(st['round']));
+    final per = _i(st['phaseActions']) < 1 ? 4 : _i(st['phaseActions']);
+    final left = per - _i(st['actions']) % per;
+    return Container(
+      margin: const EdgeInsets.only(top: 8),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: Pal.line, width: 2),
+      ),
+      child: Row(children: [
+        Text(phaseIcon(round), style: const TextStyle(fontSize: 18)),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Text(phaseLabel(round), overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w800)),
+        ),
+        Text('$left a ${phaseName(round + 1).toLowerCase()}',
+            style: const TextStyle(color: Pal.sub, fontWeight: FontWeight.w700, fontSize: 12)),
+      ]),
+    );
+  }
+
   Widget _liveBar(Map<String, dynamic> st, Map<String, dynamic>? user) {
     final next = TableService.nextRoundAt(st);
     final pos = user?['pos'] as Map?;
@@ -1236,6 +1314,7 @@ class TurnBar extends StatelessWidget {
             final st = snap.data;
             if (st == null || st['started'] != true) return const SizedBox.shrink();
             if (!kTableMode) return _liveBar(st, uSnap.data);
+            if (!kTableTurns) return _phaseBar(st);
             if (st['order'] is! List) return const SizedBox.shrink();
             final order = List<String>.from(st['order'] as List);
             final current = order[_i(st['idx'])];
@@ -1378,8 +1457,19 @@ class _TableWatcherState extends State<TableWatcher> {
     _syncLayout();
     if (st == null) return;
     TableClock.round = _i(st['round']);
+    TableClock.actions = _i(st['actions']);
     _started = st['started'] == true;
     if (!_started) return;
+    if (kTableMode && !kTableTurns) {
+      // fasi del giorno: avviso al cambio di fase (niente "tocca a te")
+      final r = _i(st['round']);
+      if (_lastRound != null && r > _lastRound! && mounted) {
+        HapticFeedback.mediumImpact();
+        snack(context, '${phaseIcon(r)} ${phaseLabel(r)}');
+      }
+      _lastRound = r;
+      return;
+    }
     if (!kTableMode) {
       // (ri)avvio: la partita ha azzerato le posizioni, il GPS deve riscriverle
       final startKey = '${st['startedAt']}';
@@ -1504,12 +1594,13 @@ class ZoneEventsStrip extends StatelessWidget {
         : (e['name'] as String? ?? eventDef(e['defId'] as String).name);
     final start = _i(e['startRound']);
     final String when;
+    final phases = kTableMode && !kTableTurns;
     if (active) {
-      when = 'finisce tra ${_giri(_i(e['endRound']) - round + 1)}';
+      when = phases ? untilLabel(_i(e['endRound']), round) : 'finisce tra ${_giri(_i(e['endRound']) - round + 1)}';
     } else if (start >= TableService.kManualStart) {
       when = 'inizio deciso dal Master';
     } else {
-      when = 'inizia tra ${_giri((start - round).clamp(1, 999))}';
+      when = phases ? whenLabel(start, round) : 'inizia tra ${_giri((start - round).clamp(1, 999))}';
     }
     final tagColor = active ? Pal.bad : Pal.warn;
     return Padding(

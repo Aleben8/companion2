@@ -7,6 +7,7 @@ import '../items.dart';
 import '../mode.dart';
 import '../constants.dart';
 import '../table/events.dart';
+import '../table/phases.dart';
 import '../table/sectors.dart';
 import '../table/type_chart.dart';
 import '../table/zones.dart';
@@ -35,7 +36,8 @@ class LocalsCheck {
 /// da solo ogni N minuti e la posizione arriva dal GPS.
 ///
 /// Firestore:
-///   Party/{codice}/table/state        -> { started, round, order[], idx, actionsPerTurn, actionsLeft }
+///   Party/{codice}/table/state        -> { started, round (= fase del giorno), actions, phaseActions, lastUid,
+///                                          (turni) order[], idx, actionsPerTurn, actionsLeft }
 ///   Party/{codice}/zoneEvents/{id}    -> { defId, zone, name, status, announceRound, startRound, endRound,
 ///                                          blocked[], claimedBy[], legendary, leader?, legendaryName?, defeatedBy? }
 ///   Party/{codice}/traps/{id}         -> { ownerUid, zone, sector, active }
@@ -88,7 +90,8 @@ class TableService {
   /// In entrambi i casi gli eventi di zona vengono pianificati.
   /// Al tavolo [biomes] sono le zone in gioco scelte dal Master (l'Hub c'è sempre; null = estrazione
   /// automatica) e i settori sono quelli impostati per il party.
-  static Future<void> startGame(String party, {bool manualEvents = false, List<String>? biomes}) async {
+  /// [phaseActions]: al tavolo senza turni, quante azioni del gruppo fanno una fase del giorno.
+  static Future<void> startGame(String party, {bool manualEvents = false, List<String>? biomes, int? phaseActions}) async {
     final live = !kTableMode;
     final players = await PartyService.players(party).get();
     if (players.docs.length < 2) throw Exception('Servono almeno 2 giocatori nel party');
@@ -130,7 +133,7 @@ class TableService {
     for (final d in (await trapsCol(party).get()).docs) {
       batch.delete(d.reference);
     }
-    for (final name in ['alarms', 'traces', 'trades']) {
+    for (final name in ['alarms', 'traces', 'trades', 'localsRequests']) {
       for (final d in (await PartyService.party(party).collection(name).get()).docs) {
         batch.delete(d.reference);
       }
@@ -138,6 +141,10 @@ class TableService {
     batch.set(stateRef(party), {
       'started': true,
       'round': 1,
+      // fasi del giorno (tavolo senza turni): azioni del gruppo, azioni per fase, chi ha agito per ultimo
+      'actions': 0,
+      'phaseActions': (phaseActions ?? suggestedPhaseActions(order.length)).clamp(kMinPhaseActions, kMaxPhaseActions),
+      'lastUid': null,
       'order': order,
       'idx': 0,
       'actionsPerTurn': per,
@@ -161,6 +168,10 @@ class TableService {
           'wildEncounter': FieldValue.delete(),
           'spotted': FieldValue.delete(),
           'ticketReturn': FieldValue.delete(),
+          'lastKind': FieldValue.delete(),
+          'waitUntilAction': FieldValue.delete(),
+          'zoneMoves': FieldValue.delete(),
+          'freeAction': FieldValue.delete(),
           'refugeRound': FieldValue.delete(),
           'localsInfo': FieldValue.delete(),
           'trappedSkip': 0,
@@ -577,23 +588,66 @@ class TableService {
     if (order[_i(s['idx'])] != uid) throw Exception('Non è il tuo turno');
   }
 
-  /// Consuma [cost] azioni del giocatore di turno (ed eventualmente sposta la pedina).
-  static Future<void> _spend(String party, String uid, int cost, {Map<String, dynamic>? setPos}) {
+  /// Consuma [cost] azioni (ed eventualmente sposta la pedina).
+  ///  - Fasi del giorno ([kTableTurns] = false): controlla le regole di [actBlock] per il tipo di
+  ///    azione [kind], aggiunge [cost] alle azioni del gruppo e, se si completa una fase, la fa avanzare.
+  ///  - Turni: solo il giocatore di turno, con le azioni rimaste.
+  static Future<void> _spend(String party, String uid, int cost, {Map<String, dynamic>? setPos, String kind = ActKind.move}) async {
     final ref = stateRef(party);
-    return _db.runTransaction<void>((tx) async {
+    if (kTableTurns) {
+      return _db.runTransaction<void>((tx) async {
+        final s = (await tx.get(ref)).data();
+        _checkTurn(s, uid);
+        final left = _i(s!['actionsLeft']);
+        if (left < cost) throw Exception('Azioni insufficienti: servono $cost, ne hai $left');
+        tx.update(ref, {'actionsLeft': left - cost});
+        if (setPos != null) {
+          tx.set(ItemService.userRef(uid), {'pos': setPos}, SetOptions(merge: true));
+        }
+      });
+    }
+    var from = 0, to = 0;
+    await _db.runTransaction<void>((tx) async {
       final s = (await tx.get(ref)).data();
-      _checkTurn(s, uid);
-      final left = _i(s!['actionsLeft']);
-      if (left < cost) throw Exception('Azioni insufficienti: servono $cost, ne hai $left');
-      tx.update(ref, {'actionsLeft': left - cost});
-      if (setPos != null) {
-        tx.set(ItemService.userRef(uid), {'pos': setPos}, SetOptions(merge: true));
-      }
+      final uref = ItemService.userRef(uid);
+      final u = (await tx.get(uref)).data();
+      final why = actBlock(state: s, user: u, uid: uid, kind: kind);
+      if (why != null) throw Exception(why);
+      final actions = _i(s!['actions']) + cost;
+      from = _i(s['round'], 1);
+      to = max(from, roundAfter(actions, _i(s['phaseActions'], 4)));
+      tx.update(ref, {'actions': actions, 'lastUid': uid, 'round': to});
+      tx.set(
+        uref,
+        {
+          if (setPos != null) 'pos': setPos,
+          if (kind != ActKind.forced) 'lastKind': kind,
+          if (kind != ActKind.forced) 'freeAction': FieldValue.delete(),
+          if (kind == ActKind.zone) 'zoneMoves': FieldValue.arrayUnion([from]),
+        },
+        SetOptions(merge: true),
+      );
     });
+    for (var r = from + 1; r <= to; r++) {
+      await _newPhase(party, r);
+    }
   }
 
-  /// "Ho usato un'azione" (cercare, raccogliere, indagare... azioni fatte al tavolo).
-  static Future<void> spendAction(String party, String uid) => _spend(party, uid, 1);
+  /// Cambio di fase del giorno: eventi (annunci, inizi, fine) e riposo nei rifugi.
+  static Future<void> _newPhase(String party, int round) async {
+    TableClock.round = round;
+    await advanceEvents(party, round);
+    for (final p in (await PartyService.players(party).get()).docs) {
+      await _refugeRest(party, p.id);
+    }
+  }
+
+  /// Azioni del gruppo finora (per chi deve aspettare: Trappola, eventi).
+  static Future<int> groupActions(String party) async => _i((await stateRef(party).get()).data()?['actions']);
+
+  /// Un'azione fatta al tavolo (es. cercare indizi: [kind] = [ActKind.search]).
+  static Future<void> spendAction(String party, String uid, {String kind = ActKind.search}) =>
+      _spend(party, uid, 1, kind: kind);
 
   /// Fine turno: passa al giocatore successivo, saltando chi è in trappola.
   /// A fine giro avanza il contatore e aggiorna gli eventi di zona.
@@ -648,7 +702,7 @@ class TableService {
     if (next != null) await _refugeRest(party, next!);
   }
 
-  /// Rifugio: a inizio turno chi si trova in un settore rifugio recupera [kRefugeHp] PS (una volta per turno).
+  /// Rifugio: a inizio turno (o a ogni nuova fase del giorno) chi si trova in un settore rifugio recupera [kRefugeHp] PS.
   static Future<void> _refugeRest(String party, String uid) async {
     final uref = ItemService.userRef(uid);
     final u = (await uref.get()).data();
@@ -793,7 +847,7 @@ class TableService {
       if ((ItemService.readInventory(me)['biglietto'] ?? 0) <= 0) throw Exception('Non hai Biglietti');
       needTicket = true;
     }
-    await _spend(party, uid, cost, setPos: {'zone': zone, 'sector': sector});
+    await _spend(party, uid, cost, setPos: {'zone': zone, 'sector': sector}, kind: zone == from ? ActKind.move : ActKind.zone);
     if (needTicket) {
       await ItemService.consume(uid, ItemId.biglietto);
       // andata con il Biglietto: il ritorno alla zona di partenza è gratis
@@ -819,7 +873,10 @@ class TableService {
         msgs.add('Qualcuno nel settore ti ha notato! Per eluderlo usa $kEludeCost azione oppure una Fune di fuga.');
       }
       if (await _checkTrap(party, uid, zone, sector)) {
-        msgs.add('Sei finito in una Trappola! Salterai il prossimo turno, a meno di usare una Fune di fuga.');
+        msgs.add(kTableTurns
+            ? 'Sei finito in una Trappola! Salterai il prossimo turno, a meno di usare una Fune di fuga.'
+            : 'Sei finito in una Trappola! Resti fermo finché gli altri non fanno $kTrapWaitActions azioni, '
+                'a meno di usare una Fune di fuga.');
       }
     }
     if (msgs.isEmpty && type == SectorType.selvaggio && _rnd.nextDouble() < kWildEncounterChance) {
@@ -891,6 +948,12 @@ class TableService {
       await uref.set({'spotted': FieldValue.delete()}, SetOptions(merge: true));
       return;
     }
+    if (!kTableTurns) {
+      // reazione obbligata: conta per il gruppo, ma non per "mai due volte di fila"
+      await _spend(party, uid, kEludeCost, kind: ActKind.forced);
+      await uref.set({'spotted': FieldValue.delete()}, SetOptions(merge: true));
+      return;
+    }
     final st = (await stateRef(party).get()).data();
     final mine = st?['order'] is List && List<String>.from(st!['order'] as List)[_i(st['idx'])] == uid;
     if (mine && _i(st['actionsLeft']) >= kEludeCost) {
@@ -929,6 +992,67 @@ class TableService {
     }, SetOptions(merge: true));
   }
 
+  // ----------------------------------------------- esplorazione: tracce e locali
+
+  /// "Cerca tracce" (1 azione): chi è passato dal tuo settore di recente, da dove è arrivato, dove è
+  /// andato e chi ci ha cercato. Una traccia si vede per (forza × [kTraceRoundsPerStrength]) giri/fasi.
+  /// La Lente vede di più (tutta la zona e le direzioni).
+  static Future<List<String>> searchTracks(String party, String uid) async {
+    final me = (await ItemService.userRef(uid).get()).data();
+    final pos = me?['pos'] as Map?;
+    if (pos == null) throw Exception('Non sei ancora sulla mappa');
+    if (me?['wildEncounter'] is Map) throw Exception('Prima affronta o sfuggi al Pokémon selvatico');
+    if (me?['spotted'] is Map) throw Exception('Ti hanno notato: prima elùdili (azione o Fune di fuga)');
+    await _spend(party, uid, kTracksActionCost, kind: ActKind.tracks);
+    final zone = pos['zone'];
+    final sector = _i(pos['sector']);
+    final round = TableClock.round;
+    bool here(dynamic z, dynamic s) => z == zone && _i(s) == sector;
+    final out = <String>[];
+    final docs = (await PartyService.party(party).collection('traces').get()).docs.map((d) => d.data()).toList()
+      ..sort((a, b) => _i(b['round']).compareTo(_i(a['round'])));
+    for (final t in docs) {
+      if (t['uid'] == uid) continue;
+      final str = _i(t['strength'], kTraceBaseStrength);
+      if (_i(t['round']) < round - kTraceRoundsPerStrength * str) continue;
+      final when = '${roundRef(t['round'])}, traccia ${traceStrengthLabel(str)}';
+      if (t['kind'] == 'search' && here(t['zone'], t['sector'])) {
+        out.add('🔍 ${t['uid']} ha cercato qui ($when)');
+      } else if (t['kind'] == 'move' && here(t['zone'], t['sector'])) {
+        final from = t['fromZone'] == null ? '' : ' da ${zoneSpec('${t['fromZone']}').name}';
+        out.add('👣 ${t['uid']} è arrivato qui$from ($when)');
+      } else if (t['kind'] == 'move' && here(t['fromZone'], t['fromSector'])) {
+        out.add('👣 ${t['uid']} è partito da qui verso ${zoneSpec('${t['zone']}').name} ($when)');
+      }
+    }
+    return out;
+  }
+
+  static CollectionReference<Map<String, dynamic>> localsRequests(String party) =>
+      PartyService.party(party).collection('localsRequests');
+
+  static Stream<QuerySnapshot<Map<String, dynamic>>> watchLocalsRequests(String party) =>
+      shared('localsRequests:$party', () => localsRequests(party).snapshots());
+
+  /// "Parla con i locali" (1 azione): la richiesta arriva al Master, che chiede il tiro al tavolo e
+  /// risponde con [answerLocals]. Il racconto lo vede solo chi ha chiesto.
+  static Future<void> requestLocals(String party, String uid) async {
+    final me = (await ItemService.userRef(uid).get()).data();
+    if (me?['pos'] == null) throw Exception('Non sei ancora sulla mappa');
+    if (me?['wildEncounter'] is Map) throw Exception('Prima affronta o sfuggi al Pokémon selvatico');
+    if (me?['spotted'] is Map) throw Exception('Ti hanno notato: prima elùdili (azione o Fune di fuga)');
+    final pending = await localsRequests(party).where('uid', isEqualTo: uid).get();
+    if (pending.docs.isNotEmpty) throw Exception('Hai già chiesto ai locali: aspetta la risposta del Master');
+    await _spend(party, uid, kLocalsActionCost, kind: ActKind.locals);
+    await localsRequests(party).add({'uid': uid, 'at': FieldValue.serverTimestamp()});
+  }
+
+  /// Il Master risponde a una richiesta ai locali: il giocatore ha superato la CD?
+  static Future<void> answerLocals(String party, String requestId, String uid, {required bool success}) async {
+    await sendLocals(party, uid, success: success);
+    await localsRequests(party).doc(requestId).delete();
+  }
+
   /// Il giocatore chiude il messaggio dei locali.
   static Future<void> dismissLocals(String uid) =>
       ItemService.userRef(uid).update({'localsInfo': FieldValue.delete()});
@@ -943,9 +1067,13 @@ class TableService {
     for (final t in traces) {
       final s = _i(t['strength'], kTraceBaseStrength);
       lines.add('${t['uid']} è ${t['kind'] == 'search' ? 'stato visto cercare' : 'passato'} nel settore ${t['sector']} '
-          '(giro ${t['round']}, traccia ${traceStrengthLabel(s)})');
+          '(${roundRef(t['round'])}, traccia ${traceStrengthLabel(s)})');
     }
-    if (traces.isEmpty) lines.add('Negli ultimi $kLocalsRounds giri non è passato nessuno da queste parti');
+    if (traces.isEmpty) {
+      lines.add(kTableTurns
+          ? 'Negli ultimi $kLocalsRounds giri non è passato nessuno da queste parti'
+          : 'Nelle ultime $kLocalsRounds fasi del giorno non è passato nessuno da queste parti');
+    }
     for (final d in (await eventsCol(party).get()).docs) {
       final e = d.data();
       if (e['zone'] != zone || (e['status'] != 'announced' && e['status'] != 'scheduled')) continue;
@@ -998,6 +1126,11 @@ class TableService {
     final uref = ItemService.userRef(uid);
     final u = (await uref.get()).data();
     if (u?['wildEncounter'] is! Map) throw Exception('Non c’è nessun Pokémon selvatico');
+    if (!kTableTurns) {
+      await _spend(party, uid, kWildFleeCost, kind: ActKind.forced);
+      await uref.set({'wildEncounter': FieldValue.delete()}, SetOptions(merge: true));
+      return;
+    }
     final st = (await stateRef(party).get()).data();
     final mine = st?['order'] is List && List<String>.from(st!['order'] as List)[_i(st['idx'])] == uid;
     if (mine && _i(st['actionsLeft']) >= kWildFleeCost) {
@@ -1038,9 +1171,19 @@ class TableService {
     }
   }
 
-  /// Controlla (senza modificare nulla) che sia il turno del giocatore.
-  static Future<void> assertMyTurn(String party, String uid) async =>
-      _checkTurn((await stateRef(party).get()).data(), uid);
+  /// Controlla (senza modificare nulla) che sia il turno del giocatore (fasi del giorno: che la partita sia iniziata).
+  static Future<void> assertMyTurn(String party, String uid) async {
+    final s = (await stateRef(party).get()).data();
+    if (!kTableTurns) {
+      if (s == null || s['started'] != true) throw Exception('La partita non è ancora iniziata');
+      return;
+    }
+    _checkTurn(s, uid);
+  }
+
+  /// Clessidra con le fasi del giorno: la prossima azione ignora "mai due volte di fila" e "mai due uguali".
+  static Future<void> grantFreeAction(String uid) =>
+      ItemService.userRef(uid).set({'freeAction': true}, SetOptions(merge: true));
 
   /// Clessidra: aggiunge al turno corrente altre azioni (quante ne ha un turno).
   static Future<void> grantActions(String party, String uid) {
@@ -1062,9 +1205,16 @@ class TableService {
       if (t.data()['ownerUid'] == uid) continue;
       final hit = await _db.runTransaction<bool>((tx) async {
         final d = (await tx.get(t.reference)).data();
+        final st = (await tx.get(stateRef(party))).data(); // letto prima di scrivere (regola delle transazioni)
         if (d == null || d['active'] != true) return false;
         tx.update(t.reference, {'active': false, 'triggeredBy': uid});
-        tx.set(ItemService.userRef(uid), {'trappedSkip': FieldValue.increment(1)}, SetOptions(merge: true));
+        if (kTableTurns) {
+          tx.set(ItemService.userRef(uid), {'trappedSkip': FieldValue.increment(1)}, SetOptions(merge: true));
+        } else {
+          // fermo finché il gruppo non fa altre kTrapWaitActions azioni
+          tx.set(ItemService.userRef(uid), {'waitUntilAction': _i(st?['actions']) + kTrapWaitActions},
+              SetOptions(merge: true));
+        }
         return true;
       });
       if (hit) return true;
@@ -1145,13 +1295,17 @@ class TableService {
 
     if (def.actionPenalty > 0) {
       final players = await PartyService.players(party).get();
+      final group = kTableMode && !kTableTurns ? await groupActions(party) : 0;
       for (final p in players.docs) {
         final user = (await ItemService.userRef(p.id).get()).data();
         final pos = user?['pos'] as Map?;
         if (pos?['zone'] == zone && ItemService.shieldZone(user) != zone) {
           await ItemService.userRef(p.id).set(
               kTableMode
-                  ? {'actionPenalty': FieldValue.increment(def.actionPenalty)}
+                  ? (kTableTurns
+                      ? {'actionPenalty': FieldValue.increment(def.actionPenalty)}
+                      // fasi del giorno: fermo finché il gruppo non fa altre N azioni
+                      : {'waitUntilAction': group + def.actionPenalty})
                   // dal vivo le azioni perse diventano un'attesa
                   : LiveService.addBusy(user, def.actionPenalty * kLivePenaltyMinutes),
               SetOptions(merge: true));

@@ -7,6 +7,7 @@ import 'package:provider/provider.dart';
 import '../geo.dart';
 import '../items.dart';
 import '../mode.dart';
+import '../table/phases.dart';
 import '../table/zones.dart';
 import '../services/item_service.dart';
 import '../services/location_service.dart';
@@ -75,6 +76,7 @@ class StatusBanner extends StatelessWidget {
   Widget _time(dynamic v, Color c) {
     final st = TextStyle(color: c, fontSize: 16, fontWeight: FontWeight.bold);
     if (v is Timestamp) return Countdown(v.toDate(), style: st);
+    if (!kTableTurns) return Text(untilLabel((v as num).toInt(), TableClock.round), style: st);
     final left = (v as num).toInt() - TableClock.round + 1;
     return Text(left == 1 ? '1 giro' : '$left giri', style: st);
   }
@@ -84,7 +86,7 @@ class StatusBanner extends StatelessWidget {
     final uid = context.read<Session>().userName!;
     return StreamBuilder<Map<String, dynamic>>(
       stream: ItemService.watchUserFields(
-          uid, const ['repellentUntil', 'koUntil', 'trappedUntil', 'trappedSkip', 'busyUntil']),
+          uid, const ['repellentUntil', 'koUntil', 'trappedUntil', 'trappedSkip', 'busyUntil', 'waitUntilAction']),
       builder: (context, snap) {
         final u = snap.data;
         if (u == null) return const SizedBox.shrink();
@@ -118,6 +120,12 @@ class StatusBanner extends StatelessWidget {
           if (skip > 0)
             _chip(Icons.warning_amber_rounded, const Color(0xFFF2A74B),
                 'Sei in una Trappola: salterai il prossimo turno', const SizedBox.shrink(),
+                action: rope),
+          if (kTableMode && !kTableTurns && ItemService.isWaiting(u))
+            _chip(Icons.warning_amber_rounded, const Color(0xFFF2A74B),
+                'Sei fermo: aspetta che gli altri facciano ancora '
+                    '${((u['waitUntilAction'] as num).toInt() - TableClock.actions)} azioni',
+                const SizedBox.shrink(),
                 action: rope),
           if (!kTableMode && ItemService.isActive(trapUntil))
             _chip(Icons.warning_amber_rounded, const Color(0xFFF2A74B), 'Sei in una Trappola!',

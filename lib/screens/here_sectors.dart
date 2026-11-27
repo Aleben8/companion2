@@ -6,6 +6,7 @@ import '../services/party_service.dart';
 import '../services/shared_stream.dart';
 import '../services/table_service.dart';
 import '../table/sectors.dart';
+import '../table/phases.dart';
 import '../table/zones.dart';
 import '../theme.dart';
 import '../widgets/drop.dart';
@@ -23,7 +24,8 @@ class HereSectors extends StatefulWidget {
   final List<Map<String, dynamic>> events; // tutti (con 'id')
   final Map pos;
   final String? shield;
-  final bool myTurn;
+  final bool myTurn; // puoi spostarti tra i settori adesso
+  final String? blockReason; // se no, perché
   final int actionsLeft;
   final bool pending; // selvatico o "ti hanno notato" da risolvere
   final bool busy;
@@ -38,6 +40,7 @@ class HereSectors extends StatefulWidget {
     required this.pos,
     required this.shield,
     required this.myTurn,
+    this.blockReason,
     required this.actionsLeft,
     required this.pending,
     required this.busy,
@@ -130,17 +133,17 @@ class _HereSectorsState extends State<HereSectors> {
         }
       }
       for (final x in sightings) {
-        if (at(x, s) && _i(x['round']) >= round - 1) out.add('👀 Hai visto ${x['uid']} (giro ${x['round']})');
+        if (at(x, s) && _i(x['round']) >= round - 1) out.add('👀 Hai visto ${x['uid']} (${roundRef(x['round'])})');
       }
       final searched = traces.where((t) => t['kind'] == 'search' && at(t, s)).map((t) => _i(t['round'])).toList()..sort();
-      if (searched.isNotEmpty) out.add('🔍 Hai già cercato qui (giro ${searched.last})');
+      if (searched.isNotEmpty) out.add('🔍 Hai già cercato qui (${roundRef(searched.last)})');
       final passed = traces.where((t) => t['kind'] == 'move' && at(t, s)).toList()
         ..sort((a, b) => _i(a['round']).compareTo(_i(b['round'])));
       if (passed.isNotEmpty) {
         final t = passed.last;
         final str = _i(t['strength']) == 0 ? kTraceBaseStrength : _i(t['strength']);
         if (_i(t['round']) >= round - kTraceRoundsPerStrength * str) {
-          out.add('👣 La tua traccia: ${traceStrengthLabel(str)} (giro ${t['round']})');
+          out.add('👣 La tua traccia: ${traceStrengthLabel(str)} (${roundRef(t['round'])})');
         }
       }
       final mineClues = [for (final c in clues) if (atPlace(c, s)) '${c['symbol']}${c['number']}'];
@@ -165,7 +168,12 @@ class _HereSectorsState extends State<HereSectors> {
     final sel = _sector != null && canGo(_sector!) ? _sector : null;
     final colors = typeColors(z.type);
     return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-      Text('Settori di ${z.name}', style: const TextStyle(fontWeight: FontWeight.w800)),
+      Text('Dove puoi andare in ${z.name}', style: const TextStyle(fontWeight: FontWeight.w800)),
+      if (!widget.myTurn && widget.blockReason != null)
+        Padding(
+          padding: const EdgeInsets.only(top: 2),
+          child: Text(widget.blockReason!, style: const TextStyle(color: Pal.sub, fontSize: 12)),
+        ),
       const SizedBox(height: 6),
       for (var s = 1; s <= z.sectors; s++) _row(s, notes(s), canGo(s), sel == s, cost(s), reason(s), colors),
       if (sel != null) ...[
@@ -181,7 +189,7 @@ class _HereSectorsState extends State<HereSectors> {
           ),
         ),
         DropButton(
-          label: 'Vai al settore $sel · ${cost(sel)} ${cost(sel) == 1 ? 'azione' : 'azioni'}',
+          label: 'Vai: ${TableLayout.typeOf(_zone, sel)?.label ?? ''} $sel · ${cost(sel)} ${cost(sel) == 1 ? 'azione' : 'azioni'}',
           icon: Icons.directions_walk,
           colors: colors,
           height: 46,
@@ -214,13 +222,22 @@ class _HereSectorsState extends State<HereSectors> {
           ),
         ),
         child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          // numero (serve al tavolo per indizi, trappole, leggendario) e icona del tipo
+          Container(
+            width: 22,
+            height: 22,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(shape: BoxShape.circle, color: grey ? Pal.line : colors.first),
+            child: Text('$s', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w800, color: grey ? Pal.sub : Colors.white)),
+          ),
+          const SizedBox(width: 6),
           Icon(type?.icon ?? Icons.place, size: 22, color: grey ? Pal.sub : colors.first),
           const SizedBox(width: 8),
           Expanded(
             child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
               Row(children: [
                 Expanded(
-                  child: Text('Settore $s · ${type?.label ?? ''}',
+                  child: Text(type?.label ?? '$s',
                       style: TextStyle(fontWeight: FontWeight.w800, color: grey ? Pal.sub : Pal.ink)),
                 ),
                 if (here)
@@ -230,6 +247,11 @@ class _HereSectorsState extends State<HereSectors> {
                 else if (reason != null)
                   _chip(reason, Pal.sub),
               ]),
+              if (here && type != null)
+                Padding(
+                  padding: const EdgeInsets.only(top: 2),
+                  child: Text(type.rules, style: const TextStyle(fontSize: 12, color: Pal.sub, height: 1.25)),
+                ),
               for (final n in notes)
                 Padding(
                   padding: const EdgeInsets.only(top: 2),

@@ -15,7 +15,8 @@ class ClueSearchButton extends StatefulWidget {
   final String party;
   final String uid;
   final bool enabled; // es. al tavolo solo nel proprio turno
-  const ClueSearchButton({super.key, required this.party, required this.uid, this.enabled = true});
+  final String? disabledReason; // perché non si può cercare adesso (fasi del giorno)
+  const ClueSearchButton({super.key, required this.party, required this.uid, this.enabled = true, this.disabledReason});
 
   @override
   State<ClueSearchButton> createState() => _ClueSearchButtonState();
@@ -74,7 +75,7 @@ class _ClueSearchButtonState extends State<ClueSearchButton> {
         final label = !playing
             ? 'Cerca indizi (piazzamento in corso)'
             : !widget.enabled
-                ? 'Cerca indizi (non è il tuo turno)'
+                ? 'Cerca indizi (${widget.disabledReason?.toLowerCase() ?? 'non è il tuo turno'})'
                 : (kTableMode ? 'Cerca indizi qui (1 azione)' : 'Cerca indizi qui');
         return Padding(
           padding: const EdgeInsets.only(top: 6, bottom: 6),

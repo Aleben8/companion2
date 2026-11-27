@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'mode.dart';
+import 'table/phases.dart';
 
 /// Identificatori degli strumenti (chiavi usate in Firestore: Users/{u}.inventory).
 enum ItemId {
@@ -176,7 +177,7 @@ const List<ItemDef> kItems = [
     ItemId.trappola,
     'Trappola',
     'Posizionala nel tuo settore. Il primo party avversario che entrerà nel settore dovrà usare '
-        'una Fune di fuga o salterà il prossimo turno.',
+        'una Fune di fuga o resterà fermo finché gli altri non avranno fatto 2 azioni.',
     'Si usa dalla borsa: la trappola viene piazzata nel settore in cui ti trovi.',
     [Color(0xFF6B5B95), Color(0xFFA79BD0)],
     liveDescription: 'Posizionala dove preferisci. Il primo party avversario che si avvicinerà alla zona dovrà usare '
@@ -269,7 +270,7 @@ const List<ItemDef> kItems = [
   ItemDef(
     ItemId.passoFelpato,
     'Passo felpato',
-    'Fino a fine giro ignori Trappole e Allarmi, non lasci tracce e sei invisibile al Radar.',
+    'Fino a fine ${kTableTurns ? 'giro' : 'fase'} ignori Trappole e Allarmi, non lasci tracce e sei invisibile al Radar.',
     'Si usa dalla borsa.',
     [Color(0xFF6B7A8F), Color(0xFFADB9C9)],
     liveDescription: 'Per $kStealthMinutes minuti ignori Trappole e Allarmi, non lasci tracce e sei invisibile al Radar.',
@@ -280,8 +281,9 @@ const List<ItemDef> kItems = [
   ItemDef(
     ItemId.clessidra,
     'Clessidra',
-    'Ottieni subito altre azioni, come un secondo turno solo per te (pari alle azioni di un turno).',
-    'Si usa nel tuo turno, dalla borsa.',
+    'Puoi agire subito, anche se hai appena agito o se è la stessa azione di prima '
+        '(una volta).',
+    'Si usa dalla borsa.',
     [Color(0xFFD9A23A), Color(0xFFF2D58A)],
     liveDescription: 'Azzera subito le attese: puoi cercare indizi, comprare e agire senza aspettare '
         '(anche dopo bufera ed eruzione).',

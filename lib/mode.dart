@@ -21,7 +21,8 @@ bool get kTableMode => AppMode.current != kModeLive;
 /// Giro corrente della partita da tavolo, aggiornato in tempo reale
 /// (serve a calcolare la durata degli effetti "in giri").
 class TableClock {
-  static int round = 0;
+  static int round = 0; // senza turni: la fase del giorno (vedi lib/table/phases.dart)
+  static int actions = 0; // azioni fatte dal gruppo (fasi del giorno)
 }
 
 // ---- Regole del tavolo (modificale qui) ------------------------------------

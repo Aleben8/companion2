@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'zones.dart';
+import 'phases.dart';
 
 export 'zones.dart' show SectorType, TableLayout, kDefaultSectors;
 
@@ -29,7 +30,8 @@ extension SectorTypeX on SectorType {
           'Entrando, ${(kWildEncounterChance * 100).round()}% di incontrare un Pokémon selvatico.',
         SectorType.impervio => 'Entrare costa +$kImperviousExtraCost azione. Cercando trovi più spesso strumenti '
             '(${(kImperviousSearchItemChance * 100).round()}%). Qui compare il leggendario.',
-        SectorType.rifugio => 'A inizio turno recuperi $kRefugeHp PS. Nessuno può sfidarti a battaglia.',
+        SectorType.rifugio =>
+          '${kTableTurns ? 'A inizio turno' : 'A ogni nuova fase del giorno'} recuperi $kRefugeHp PS. Nessuno può sfidarti a battaglia.',
         SectorType.passaggio => 'Da qui partono e qui arrivano Biglietto, treno e traghetto.',
       };
 
@@ -101,5 +103,7 @@ String traceStrengthLabel(int s) => switch (s) {
     };
 
 // ---- Informazioni dai locali ----------------------------------------------------
+const int kTracksActionCost = 1; // "Cerca tracce" (Esplorazione)
+const int kLocalsActionCost = 1; // "Parla con i locali" (Esplorazione)
 const int kLocalsBaseCd = 12; // CD base del tiro d20 per avere informazioni dai locali
 const int kLocalsRounds = 3; // di quanti giri fa parlano i locali

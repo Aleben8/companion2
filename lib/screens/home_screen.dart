@@ -1,3 +1,5 @@
+import 'dart:ui' show ImageFilter;
+
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
@@ -63,6 +65,7 @@ class _HomeScreenState extends State<HomeScreen> {
     final color = s.color;
 
     return Scaffold(
+      extendBody: true, // il contenuto scorre sotto il menu (che è di vetro)
       appBar: AppBar(
         title: const Text('Companion', style: TextStyle(fontWeight: FontWeight.w800)),
         actions: [
@@ -76,41 +79,155 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
         ],
       ),
-      body: ListView(
+      // copertina che si riduce scorrendo (resta una barra con nome e PS) e menu fisso in basso
+      // Builder: il contesto dentro lo Scaffold conosce l'altezza del menu (extendBody), quello fuori no
+      body: Builder(builder: (inner) => CustomScrollView(
         key: ValueKey(mode),
-        padding: EdgeInsets.zero,
-        children: [
-          const ZoneEventsStrip(),
-          _Hero(color: color, name: name, prim: prim, sec: sec, level: level),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 8, 16, 40),
-            child: Column(children: [
-              const GameWatcher(),
-              const TableWatcher(), // turni al tavolo; orologio dei giri e zona GPS dal vivo
-              const TurnBar(),
-              const StatusBanner(),
-              const SizedBox(height: 8),
-              _Tabs(color: color, tab: _tab, onTab: (t) => setState(() => _tab = t)),
-              const SizedBox(height: 6),
-              switch (_tab) {
-                HomeTab.stats => _StatsPanel(pk: pk, color: color),
-                HomeTab.party => const PartyTab(),
-                HomeTab.battle => BattleTab(key: ValueKey(_openBattleId), initialBattleId: _openBattleId),
-                HomeTab.bag => const InventoryTab(),
-                HomeTab.map => kTableMode
-                    ? TableTab(onBattle: _openBattle)
-                    // dal vivo: mappa con palestre e zone, poi la partita a zone (eventi, empori, leggendario)
-                    : Column(children: [
-                        GymsTab(onBattle: _openBattle),
-                        TableTab(onBattle: _openBattle),
-                      ]),
-              },
-            ]),
+        slivers: [
+          const SliverToBoxAdapter(child: ZoneEventsStrip()),
+          // copertina aperta solo in Statistiche: nelle altre sezioni si ritira (animata) come scorrendo
+          TweenAnimationBuilder<double>(
+            tween: Tween(end: _tab == HomeTab.stats ? 1.0 : 0.0),
+            duration: const Duration(milliseconds: 320),
+            curve: Curves.easeInOut,
+            builder: (context, open, _) => SliverPersistentHeader(
+              pinned: true,
+              delegate: _HeroHeader(
+                hero: _Hero(color: color, name: name, prim: prim, sec: sec, level: level),
+                name: name,
+                color: color,
+                bg: Theme.of(context).scaffoldBackgroundColor,
+                open: open,
+              ),
+            ),
+          ),
+          SliverToBoxAdapter(
+            child: Padding(
+              // spazio sotto per non finire coperti dal menu di vetro
+              // spazio in fondo = altezza del menu di vetro + margine: l'ultimo contenuto resta visibile
+              padding: EdgeInsets.fromLTRB(16, 8, 16, 24 + MediaQuery.of(inner).padding.bottom),
+              child: Column(children: [
+                const GameWatcher(),
+                const TableWatcher(), // turni al tavolo; orologio dei giri e zona GPS dal vivo
+                const TurnBar(),
+                const StatusBanner(),
+                const SizedBox(height: 8),
+                switch (_tab) {
+                  HomeTab.stats => _StatsPanel(pk: pk, color: color),
+                  HomeTab.party => const PartyTab(),
+                  HomeTab.battle => BattleTab(key: ValueKey(_openBattleId), initialBattleId: _openBattleId),
+                  HomeTab.bag => const InventoryTab(),
+                  HomeTab.map => kTableMode
+                      ? TableTab(onBattle: _openBattle)
+                      // dal vivo: mappa con palestre e zone, poi la partita a zone (eventi, empori, leggendario)
+                      : Column(children: [
+                          GymsTab(onBattle: _openBattle),
+                          TableTab(onBattle: _openBattle),
+                        ]),
+                },
+              ]),
+            ),
           ),
         ],
+      )),
+      // menu fisso in basso con effetto vetro: sfoca e schiarisce quello che ci scorre sotto
+      bottomNavigationBar: SafeArea(
+        top: false,
+        minimum: const EdgeInsets.only(bottom: 8),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 10),
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(26),
+            child: BackdropFilter(
+              filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 4),
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.topCenter,
+                    end: Alignment.bottomCenter,
+                    colors: [Colors.white.withOpacity(0.55), Colors.white.withOpacity(0.35)],
+                  ),
+                  borderRadius: BorderRadius.circular(26),
+                  border: Border.all(color: Colors.white.withOpacity(0.7), width: 1.2),
+                ),
+                child: _Tabs(color: color, tab: _tab, onTab: (t) => setState(() => _tab = t)),
+              ),
+            ),
+          ),
+        ),
       ),
     );
   }
+}
+
+/// Copertina fissata in alto: grande all'inizio, scorrendo si riduce a una barra (come la fascia
+/// degli eventi, ma del colore scelto dal giocatore) con il Pokémon, il nome e i PS.
+class _HeroHeader extends SliverPersistentHeaderDelegate {
+  final Widget hero;
+  final String name;
+  final Color color; // colore scelto dal giocatore
+  final Color bg;
+  final double open; // 1 = copertina aperta (Statistiche), 0 = solo la barra (altre sezioni)
+  _HeroHeader({required this.hero, required this.name, required this.color, required this.bg, this.open = 1});
+
+  static const double _max = 352; // copertina (340) + margine sopra
+  static const double _min = 64;
+
+  @override
+  double get maxExtent => _min + (_max - _min) * open;
+  @override
+  double get minExtent => _min;
+
+  @override
+  Widget build(BuildContext context, double shrinkOffset, bool overlapsContent) {
+    // quanto è chiusa (0 = copertina intera, 1 = solo barra), per scorrimento o perché la sezione la ritira
+    final extent = (maxExtent - shrinkOffset).clamp(_min, _max);
+    final t = (1 - (extent - _min) / (_max - _min)).clamp(0.0, 1.0);
+    final bar = ((t - 0.6) / 0.4).clamp(0.0, 1.0);
+    return Stack(clipBehavior: Clip.hardEdge, children: [
+      // la copertina scorre via (e sfuma)
+      Positioned(
+        top: extent - _max,
+        left: 0,
+        right: 0,
+        height: _max,
+        child: Opacity(opacity: (1 - t * 1.4).clamp(0.0, 1.0), child: hero),
+      ),
+      if (bar > 0)
+        Positioned.fill(
+          child: Opacity(
+            opacity: bar,
+            child: ColoredBox(
+              color: bg,
+              child: Container(
+                margin: const EdgeInsets.fromLTRB(16, 8, 16, 6),
+                padding: const EdgeInsets.symmetric(horizontal: 10),
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(colors: [color, lighten(color, 0.3)]),
+                  borderRadius: BorderRadius.circular(18),
+                  boxShadow: [BoxShadow(color: color.withOpacity(0.3), blurRadius: 10, offset: const Offset(0, 4))],
+                ),
+                child: Row(children: [
+                  PokemonImage(name, size: 36),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(name,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w800)),
+                  ),
+                  const _HpPill(),
+                ]),
+              ),
+            ),
+          ),
+        ),
+    ]);
+  }
+
+  @override
+  bool shouldRebuild(_HeroHeader old) => old.name != name || old.color != color || old.bg != bg || old.hero != hero || old.open != open;
 }
 
 /// Copertina con il Pokémon sul colore identificativo del giocatore.
@@ -270,12 +387,12 @@ class _Tabs extends StatelessWidget {
         onTap: () => onTab(t),
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 220),
-          margin: const EdgeInsets.symmetric(horizontal: 3, vertical: 8),
-          height: 68,
+          margin: const EdgeInsets.symmetric(horizontal: 3, vertical: 6),
+          height: 58,
           decoration: BoxDecoration(
             gradient: sel ? LinearGradient(colors: [color, lighten(color, 0.3)]) : null,
-            color: sel ? null : Colors.white,
-            border: sel ? null : Border.all(color: Pal.line, width: 2),
+            color: sel ? null : Colors.white.withOpacity(0.35),
+            border: sel ? null : Border.all(color: Colors.white.withOpacity(0.8), width: 1.5),
             borderRadius: const BorderRadius.only(
               topLeft: Radius.circular(22),
               bottomRight: Radius.circular(22),
@@ -308,7 +425,7 @@ class _Tabs extends StatelessWidget {
         _btn(HomeTab.stats, 'Statistiche', asset: 'assets/images/stats.png'),
         _btn(HomeTab.party, 'Party', asset: 'assets/images/party.png'),
         _btn(HomeTab.battle, 'Battaglia', asset: 'assets/images/battle.png'),
-        _btn(HomeTab.bag, 'Borsa', icon: Icons.backpack_outlined),
+        _btn(HomeTab.bag, 'Borsa', asset: 'assets/images/borsa.png'),
         kTableMode
             ? _btn(HomeTab.map, 'Tavolo', icon: Icons.casino_outlined)
             : _btn(HomeTab.map, 'Mappa', icon: Icons.map_outlined),

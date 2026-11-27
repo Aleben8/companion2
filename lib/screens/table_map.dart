@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../services/table_service.dart';
 import '../table/events.dart';
+import '../table/phases.dart';
 import '../table/sectors.dart';
 import '../table/zones.dart';
 import '../theme.dart';
@@ -18,7 +19,8 @@ class TableMap extends StatefulWidget {
   final List<Map<String, dynamic>> events; // tutti gli eventi (con 'id')
   final Map? pos;
   final String? shield;
-  final bool myTurn;
+  final bool myTurn; // puoi cambiare zona adesso
+  final String? blockReason; // se no, perché
   final int actionsLeft;
   final int ticketCount;
   final String? freeReturn; // zona dove puoi tornare gratis (andata con il Biglietto)
@@ -33,6 +35,7 @@ class TableMap extends StatefulWidget {
     required this.pos,
     required this.shield,
     required this.myTurn,
+    this.blockReason,
     required this.actionsLeft,
     required this.ticketCount,
     this.freeReturn,
@@ -71,9 +74,13 @@ class _TableMapState extends State<TableMap> {
       );
 
   String get _hint {
-    if (!widget.myTurn) return 'Non è il tuo turno: le zone sono in grigio.';
+    if (!widget.myTurn) return '${widget.blockReason ?? 'Non è il tuo turno'}: le zone sono in grigio.';
     if (widget.wildPending) return 'Prima risolvi quello che ti è successo entrando (scheda qui sopra).';
     if (widget.actionsLeft <= 0) return 'Hai finito le azioni: termina il turno.';
+    if (!kTableTurns) {
+      return 'Colorate le zone dove puoi andare adesso. Al massimo $kZoneMovesPerDay cambi di zona al giorno, '
+          'distanziati (se cambi zona la sera, la mattina dopo no).';
+    }
     return 'Colorate le zone dove puoi andare adesso. Tocca una zona per scegliere il settore d’arrivo. '
         'I settori della tua zona sono nella scheda qui sopra.';
   }
@@ -199,9 +206,11 @@ class _TableMapState extends State<TableMap> {
       if (e['status'] == 'active') {
         final left = _i(e['endRound']) - round + 1;
         final name = e['legendary'] == true && e['legendaryName'] != null ? '${e['legendaryName']}' : '${e['name']}';
-        out.add('${e['legendary'] == true ? '⚡' : '⚠️'} $name · ${left <= 1 ? 'ultimo giro' : 'ancora $left giri'}');
+        final until = kTableTurns ? (left <= 1 ? 'ultimo giro' : 'ancora $left giri') : untilLabel(_i(e['endRound']), round);
+        out.add('${e['legendary'] == true ? '⚡' : '⚠️'} $name · $until');
       } else if (e['status'] == 'announced') {
-        out.add('🔜 In arrivo: ${e['name']}');
+        final start = _i(e['startRound']);
+        out.add('🔜 ${e['name']}${kTableTurns || start >= TableService.kManualStart ? ' in arrivo' : ' ${whenLabel(start, round)}'}');
       }
     }
     return out;
