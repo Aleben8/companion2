@@ -3,12 +3,14 @@ import 'dart:math';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:geolocator/geolocator.dart';
 
+import '../abilities.dart';
 import '../geo.dart';
 import '../items.dart';
 import '../mode.dart';
 import '../table/phases.dart';
 import '../table/sectors.dart';
 import '../table/zones.dart';
+import 'ability_service.dart';
 import 'live_service.dart';
 import 'party_service.dart';
 import 'shared_stream.dart';
@@ -192,15 +194,23 @@ class ItemService {
       (await userRef(uid).get()).data()?['pos'] as Map?;
 
   /// Calmanella: rivela la tua posizione agli altri del party.
+  /// Depistaggio: gli altri vedono una zona a caso (dal vivo un punto falso); Ombra: solo la zona.
   static Future<void> useBell(String uid, String party, Position? pos) async {
     Map<String, dynamic> payload;
+    final decoy = await AbilityService.hasPersonal(party, Ab.depistaggio, uid);
+    final shadow = (await AbilityService.passives(uid)).contains(Ab.ombra);
+    final here = await _pos(uid);
     if (kTableMode) {
-      final p = await _pos(uid);
-      if (p == null) throw Exception('Posizione non disponibile');
-      payload = {'zone': p['zone'], 'sector': p['sector']};
+      if (here == null) throw Exception('Posizione non disponibile');
+      payload = decoy
+          ? {'zone': _randomZone()}
+          : {'zone': here['zone'], if (!shadow) 'sector': here['sector']};
     } else {
       if (pos == null) throw Exception('Posizione non disponibile');
-      payload = {'lat': pos.latitude, 'lng': pos.longitude};
+      final fake = decoy ? _fakePoint(pos.latitude, pos.longitude) : null;
+      payload = shadow && !decoy
+          ? {'zone': here?['zone'] ?? 'fuori'}
+          : {'lat': fake?.$1 ?? pos.latitude, 'lng': fake?.$2 ?? pos.longitude};
     }
     await _consume(uid, ItemId.calmanella);
     await PartyService.party(party).collection('events').add({
@@ -212,43 +222,95 @@ class ItemService {
   }
 
   /// Radar: posizione degli altri party (esclusi quelli con Repellente o nascosti da un evento).
-  static Future<List<RadarContact>> useRadar(String uid, String party, Position? pos) async {
-    if (!kTableMode && pos == null) throw Exception('Posizione non disponibile');
+  static Future<List<RadarContact>> useRadar(String uid, String party, Position? pos) =>
+      radarScan(uid, party, pos);
+
+  /// Radar (e Impulso: [zoneOnly], senza consumare strumenti).
+  /// Non vede: Repellente, Passo felpato, Svanire, nebbia (salvo Bussola/Fotosintesi). Depistaggio: zona a caso
+  /// (dal vivo distanza e direzione false); Ombra: solo la zona; Mente lucida: chi è visto riceve un avviso.
+  static Future<List<RadarContact>> radarScan(String uid, String party, Position? pos,
+      {bool zoneOnly = false, bool consume = true}) async {
+    if (!kTableMode && !zoneOnly && pos == null) throw Exception('Posizione non disponibile');
     final me = (await userRef(uid).get()).data();
-    await _consume(uid, ItemId.radar);
+    await assertNoSwarm(party, uid, me);
+    final myZone = (me?['pos'] as Map?)?['zone'];
+    if (zoneOnly && myZone == null) throw Exception('Non sei in una zona');
+    if (consume) await _consume(uid, ItemId.radar);
     final players = await PartyService.players(party).get();
+    final effects = await AbilityService.activeEffects(party);
     final out = <RadarContact>[];
     // nebbia: dal vivo nasconde chi è (secondo il GPS) nella zona dell'evento
     final hidden = await TableService.radarHiddenZones(party);
-    final mine = shieldZone(me); // Bussola: vedi anche attraverso la nebbia di quella zona
-    if (mine != null) hidden.remove(mine);
+    // Bussola e Fotosintesi: vedi anche attraverso la nebbia
+    hidden.removeAll(await AbilityService.shieldedZones(uid, me));
+    final seen = <String>[];
     for (final p in players.docs) {
       if (p.id == uid) continue;
       final u = (await userRef(p.id).get()).data();
       if (u == null || isActive(u['repellentUntil']) || isActive(u['stealthUntil'])) continue;
-      if (kTableMode) {
-        final tp = u['pos'];
-        if (tp is! Map || hidden.contains(tp['zone'])) continue;
+      if (AbilityService.personal(effects, Ab.svanire, p.id)) continue;
+      final tp = u['pos'] as Map?;
+      if (hidden.contains(tp?['zone'])) continue;
+      if (zoneOnly && tp?['zone'] != myZone) continue;
+      final their = await AbilityService.passives(p.id, u);
+      final decoy = AbilityService.personal(effects, Ab.depistaggio, p.id);
+      final shadow = their.contains(Ab.ombra);
+      if (kTableMode || zoneOnly) {
+        if (tp == null) continue;
+        final z = decoy ? _randomZone() : '${tp['zone']}';
         out.add(RadarContact(p.id, 0, '', Duration.zero,
-            place: '${zoneSpec('${tp['zone']}').name} · settore ${tp['sector']}'));
-        continue;
+            place: decoy || shadow
+                ? zoneSpec(z).name
+                : (kTableMode ? '${zoneSpec(z).name} · settore ${tp['sector']}' : '${zoneSpec(z).name} · ${LiveService.sectorLabel(z, tp['sector'])}')));
+      } else {
+        final loc = u['location'];
+        if (loc is! Map) continue;
+        var lat = (loc['lat'] as num?)?.toDouble();
+        var lng = (loc['lng'] as num?)?.toDouble();
+        if (lat == null || lng == null) continue;
+        if (shadow && !decoy) {
+          out.add(RadarContact(p.id, 0, '', Duration.zero, place: tp == null ? 'fuori dalle zone di gioco' : zoneSpec('${tp['zone']}').name));
+        } else {
+          if (decoy) (lat, lng) = _fakePoint(lat, lng);
+          final at = _ts(loc['at']);
+          out.add(RadarContact(
+            p.id,
+            distanceMeters(pos!.latitude, pos.longitude, lat, lng),
+            compass(pos.latitude, pos.longitude, lat, lng),
+            at == null ? Duration.zero : DateTime.now().difference(at),
+          ));
+        }
       }
-      if (hidden.contains((u['pos'] as Map?)?['zone'])) continue;
-      final loc = u['location'];
-      if (loc is! Map) continue;
-      final lat = (loc['lat'] as num?)?.toDouble();
-      final lng = (loc['lng'] as num?)?.toDouble();
-      if (lat == null || lng == null) continue;
-      final at = _ts(loc['at']);
-      out.add(RadarContact(
-        p.id,
-        distanceMeters(pos!.latitude, pos.longitude, lat, lng),
-        compass(pos.latitude, pos.longitude, lat, lng),
-        at == null ? Duration.zero : DateTime.now().difference(at),
-      ));
+      if (their.contains(Ab.menteLucida)) seen.add(p.id);
     }
+    // Mente lucida: avviso segreto a chi è stato visto
+    if (seen.isNotEmpty) await AbilityService.notice(party, seen, '🧠 Mente lucida: $uid ti ha visto con il Radar');
     out.sort((a, b) => a.distance.compareTo(b.distance));
     return out;
+  }
+
+  static final _rnd = Random();
+
+  /// Depistaggio al tavolo: una zona in gioco a caso.
+  static String _randomZone() {
+    final zones = TableLayout.zonesInPlay;
+    return zones[_rnd.nextInt(zones.length)].id;
+  }
+
+  /// Depistaggio dal vivo: un punto falso a 100-400 m in una direzione a caso.
+  static (double, double) _fakePoint(double lat, double lng) {
+    final d = 100 + _rnd.nextInt(300);
+    final a = _rnd.nextDouble() * 2 * pi;
+    return (lat + d * cos(a) / 111320, lng + d * sin(a) / (111320 * cos(lat * pi / 180)));
+  }
+
+  /// Sciame: nella zona dello sciame nessun altro può usare Radar, Lente o Sensore (né Impulso e Fiuto).
+  static Future<void> assertNoSwarm(String party, String uid, [Map<String, dynamic>? me]) async {
+    final zone = ((me ?? (await userRef(uid).get()).data())?['pos'] as Map?)?['zone'];
+    if (zone == null) return;
+    if (effectsAt(await AbilityService.activeEffects(party), Ab.sciame, '$zone', notOwner: uid).isNotEmpty) {
+      throw Exception('Uno sciame ronza nella tua zona: niente Radar, Lente o Sensore per questo giro');
+    }
   }
 
   /// Trappola: piazzata nella tua posizione (GPS) o nel tuo settore (tavolo).
@@ -272,7 +334,8 @@ class ItemService {
   }
 
   /// (Dal vivo) Un giocatore entra nel raggio di una trappola altrui: scatta una sola volta.
-  static Future<bool> triggerTrap(String party, String trapId, String uid) {
+  static Future<bool> triggerTrap(String party, String trapId, String uid) async {
+    if ((await AbilityService.passives(uid)).contains(Ab.attraversamuri)) return false; // Attraversamuri
     final ref = PartyService.party(party).collection('traps').doc(trapId);
     return _db.runTransaction<bool>((tx) async {
       final t = (await tx.get(ref)).data();
@@ -294,8 +357,9 @@ class ItemService {
   static int bagCount(Map<String, int> inv) => inv.values.fold(0, (a, b) => a + b);
 
   /// Aggiunge [n] pezzi alla borsa se c'è posto. Restituisce false se la borsa è piena.
-  static bool addItem(Map<String, int> inv, String key, [int n = 1]) {
-    if (bagCount(inv) + n > kBagLimit) return false;
+  /// [limit]: posti della borsa (con la passiva Lega sono di più, vedi [bagLimit]).
+  static bool addItem(Map<String, int> inv, String key, [int n = 1, int limit = kBagLimit]) {
+    if (bagCount(inv) + n > limit) return false;
     final max = kItems.where((i) => i.key == key).firstOrNull?.maxInBag;
     if (max != null && (inv[key] ?? 0) + n > max) return false; // es. MT: al massimo 1
     inv[key] = (inv[key] ?? 0) + n;
@@ -320,6 +384,19 @@ class ItemService {
   static List<String> dropKeys() =>
       [for (final i in kItems) if (i.zone == null && i.random && (kTableMode || !i.tableOnly)) i.key];
 
+  /// Posti della borsa di [uid] (Lega: +2).
+  static Future<int> bagLimit(String uid, [Map<String, dynamic>? user]) async =>
+      bagLimitFor(await AbilityService.passives(uid, user), kBagLimit);
+
+  /// Fortuna: quando trovi o vinci uno strumento, 25% di prenderne due (mai per la MT).
+  static Future<List<ItemId>> luckyDrops(String uid, List<ItemId> items, {Random? rnd}) async {
+    if (items.isEmpty || !(await AbilityService.passives(uid)).contains(Ab.fortuna)) return items;
+    final r = rnd ?? Random();
+    return [
+      for (final id in items) ...[id, if (itemDef(id).random && r.nextDouble() < kLuckChance) id],
+    ];
+  }
+
   /// Premio della prima vittoria su un capopalestra: la MT se non ne hai già una, altrimenti uno strumento a caso.
   static ItemId gymPrize(Map<String, dynamic>? user, {Random? rnd}) =>
       (readInventory(user)[ItemId.mt.name] ?? 0) <= 0 ? ItemId.mt : randomDrop(rnd: rnd);
@@ -327,17 +404,18 @@ class ItemService {
   /// Assegna monete e strumenti (transazione). Restituisce il testo del premio.
   static Future<String> grant(String uid, {int coins = 0, List<ItemId> items = const []}) {
     final ref = userRef(uid);
-    return _db.runTransaction<String>((tx) async {
+    final limitF = bagLimit(uid);
+    return limitF.then((limit) => _db.runTransaction<String>((tx) async {
       final u = (await tx.get(ref)).data() ?? {};
       final inv = readInventory(u);
       final parts = <String>[];
       if (coins > 0) parts.add('+$coins 🪙');
       for (final id in items) {
-        parts.add(addItem(inv, id.name) ? itemDef(id).name : '${itemDef(id).name} (borsa piena: perso)');
+        parts.add(addItem(inv, id.name, 1, limit) ? itemDef(id).name : '${itemDef(id).name} (borsa piena: perso)');
       }
       tx.set(ref, {'inventory': inv, 'coins': coinsOf(u) + coins}, SetOptions(merge: true));
       return parts.join(', ');
-    });
+    }));
   }
 
   /// Acquisto all'emporio.
@@ -346,36 +424,49 @@ class ItemService {
       kTableMode && TableClock.round > 0 && ((u?['bargainUntil'] as num?)?.toInt() ?? 0) >= TableClock.round;
 
   /// Prezzo all'emporio per questo giocatore (con lo sconto di Contrattare, minimo 1).
-  static int priceFor(ItemDef def, Map<String, dynamic>? u) =>
-      bargainActive(u) ? max(1, def.price - kBargainDiscount) : def.price;
+  /// Con la passiva Cliente abituale ogni acquisto costa 1 moneta in meno (si somma a Contrattare, minimo 1).
+  static int priceFor(ItemDef def, Map<String, dynamic>? u, {Set<String> passives = const {}}) {
+    var p = def.price;
+    if (bargainActive(u)) p -= kBargainDiscount;
+    if (passives.contains(Ab.clienteAbituale)) p -= 1;
+    return max(1, p);
+  }
 
-  static Future<void> buy(String uid, ItemId id) {
+  static Future<void> buy(String uid, ItemId id) async {
     final ref = userRef(uid);
+    final passives = await AbilityService.passives(uid);
+    final limit = bagLimitFor(passives, kBagLimit);
     return _db.runTransaction<void>((tx) async {
       final u = (await tx.get(ref)).data() ?? {};
       if (!kTableMode) LiveService.assertNotBusy(u);
       final def = itemDef(id);
       if (!def.buyable) throw Exception('${def.name} non si compra');
       final coins = coinsOf(u);
-      final price = priceFor(def, u);
+      final price = priceFor(def, u, passives: passives);
       if (coins < price) throw Exception('Monete insufficienti (servono $price 🪙)');
       final inv = readInventory(u);
-      if (!addItem(inv, id.name)) throw Exception('Borsa piena ($kBagLimit oggetti)');
+      if (!addItem(inv, id.name, 1, limit)) throw Exception('Borsa piena ($limit oggetti)');
       tx.set(ref, {'inventory': inv, 'coins': coins - price}, SetOptions(merge: true));
     });
   }
 
   /// Crafting: consuma gli ingredienti e crea il risultato.
-  static Future<void> craft(String uid, Recipe r) {
+  static Future<void> craft(String uid, Recipe r) => _craft(uid, r.inputs, r.output);
+
+  /// Forgia: la ricetta [r] fatta con 1 solo ingrediente ([pay]).
+  static Future<void> craftWith(String uid, Recipe r, ItemId pay) => _craft(uid, {pay: 1}, r.output);
+
+  static Future<void> _craft(String uid, Map<ItemId, int> inputs, ItemId output) async {
     final ref = userRef(uid);
+    final limit = await bagLimit(uid);
     return _db.runTransaction<void>((tx) async {
       final u = (await tx.get(ref)).data() ?? {};
       final inv = readInventory(u);
-      r.inputs.forEach((id, n) {
+      inputs.forEach((id, n) {
         if ((inv[id.name] ?? 0) < n) throw Exception('Ti servono ${n}x ${itemDef(id).name}');
         inv[id.name] = inv[id.name]! - n;
       });
-      if (!addItem(inv, r.output.name)) throw Exception('Borsa piena ($kBagLimit oggetti)');
+      if (!addItem(inv, output.name, 1, limit)) throw Exception('Borsa piena ($limit oggetti)');
       tx.set(ref, {'inventory': inv}, SetOptions(merge: true));
     });
   }
@@ -423,6 +514,9 @@ class ItemService {
 
   static Future<void> answerTrade(String party, String tradeId, String uid, {required bool accept}) async {
     final tref = trades(party).doc(tradeId);
+    final pending = (await tref.get()).data();
+    final fromLimit = pending == null ? kBagLimit : await bagLimit('${pending['from']}');
+    final toLimit = await bagLimit(uid);
     await _db.runTransaction<void>((tx) async {
       final t = (await tx.get(tref)).data();
       if (t == null || t['status'] != 'pending' || t['to'] != uid) throw Exception('Offerta non più valida');
@@ -443,9 +537,9 @@ class ItemService {
       if (want != null) {
         if ((ti[want] ?? 0) <= 0) throw Exception('Non hai ${itemDef(ItemId.values.byName(want)).name} da dare in cambio');
         ti[want] = ti[want]! - 1;
-        if (!addItem(fi, want)) throw Exception('La borsa di chi ha offerto è piena');
+        if (!addItem(fi, want, 1, fromLimit)) throw Exception('La borsa di chi ha offerto è piena');
       }
-      if (!addItem(ti, give)) throw Exception('Borsa piena ($kBagLimit oggetti)');
+      if (!addItem(ti, give, 1, toLimit)) throw Exception('Borsa piena ($toLimit oggetti)');
       tx.set(fromRef, {'inventory': fi}, SetOptions(merge: true));
       tx.set(toRef, {'inventory': ti}, SetOptions(merge: true));
       tx.update(tref, {'status': 'done'});
@@ -460,9 +554,11 @@ class ItemService {
       PartyService.party(party).collection('traces');
 
   /// Registra una traccia (movimento o ricerca) leggibile con la Lente. Il Passo felpato non ne lascia.
-  static Future<void> addTrace(String party, String uid, Map<String, dynamic> data) async {
+  /// Svanire: niente tracce per 2 giri. [force]: la traccia resta comunque (Rovi).
+  static Future<void> addTrace(String party, String uid, Map<String, dynamic> data, {bool force = false}) async {
     final u = (await userRef(uid).get()).data();
-    if (isActive(u?['stealthUntil'])) return;
+    if (!force && isActive(u?['stealthUntil'])) return;
+    if (!force && await AbilityService.hasPersonal(party, Ab.svanire, uid)) return;
     await _tracesCol(party).add({
       'uid': uid,
       ...data,
@@ -472,15 +568,21 @@ class ItemService {
   }
 
   /// Lente: zone/settori già battuti e direzioni prese dagli altri.
-  static Future<LensReport> useLens(String uid, String party, Position? pos) async {
+  /// Fiuto: [consume] false e solo il tuo settore ([sectorOnly]). Dal vivo senza posizione GPS usa l'ultima nota.
+  static Future<LensReport> useLens(String uid, String party, Position? pos, {bool consume = true, bool sectorOnly = false}) async {
     Map? me;
+    await assertNoSwarm(party, uid);
     if (kTableMode) {
       me = await _pos(uid);
       if (me == null) throw Exception('Posizione non disponibile');
     } else if (pos == null) {
-      throw Exception('Posizione non disponibile');
+      final loc = (await userRef(uid).get()).data()?['location'];
+      if (loc is! Map || loc['lat'] is! num) throw Exception('Posizione non disponibile');
+      pos = Position(
+          latitude: (loc['lat'] as num).toDouble(), longitude: (loc['lng'] as num).toDouble(), timestamp: DateTime.now(),
+          accuracy: 0, altitude: 0, altitudeAccuracy: 0, heading: 0, headingAccuracy: 0, speed: 0, speedAccuracy: 0);
     }
-    await _consume(uid, ItemId.lente);
+    if (consume) await _consume(uid, ItemId.lente);
     final docs = (await _tracesCol(party).get()).docs.map((d) => d.data()).where((t) => t['uid'] != uid).toList();
     final searched = <String>[];
     final moves = <String>[];
@@ -494,6 +596,12 @@ class ItemService {
           .toList();
       final bySector = <String, Set<int>>{};
       for (final t in recent.where((t) => t['kind'] == 'search')) {
+        if (sectorOnly) {
+          if (t['zone'] == me!['zone'] && t['sector'] == me['sector']) {
+            searched.add('${t['uid']} ha cercato qui (${roundRef(t['round'])}, traccia ${traceStrengthLabel(strength(t))})');
+          }
+          continue;
+        }
         bySector.putIfAbsent('${t['zone']}', () => {}).add((t['sector'] as num).toInt());
       }
       for (final z in kZones) {
@@ -528,6 +636,7 @@ class ItemService {
 
   /// Sensore: quanti indizi nascosti (non tuoi) ci sono qui.
   static Future<int> useSensor(String uid, String party, Position? pos) async {
+    await assertNoSwarm(party, uid);
     Map? me;
     if (kTableMode) {
       me = await _pos(uid);
@@ -573,6 +682,7 @@ class ItemService {
 
   /// Un giocatore passa su un Allarme altrui: scatta una volta e avvisa il proprietario.
   static Future<bool> triggerAlarm(String party, String alarmId, String intruder) async {
+    if ((await AbilityService.passives(intruder)).contains(Ab.attraversamuri)) return false; // Attraversamuri
     final ref = PartyService.party(party).collection('alarms').doc(alarmId);
     Map<String, dynamic>? fired;
     await _db.runTransaction<void>((tx) async {
@@ -600,6 +710,11 @@ class ItemService {
   /// Radar meteo: eventi di zona in arrivo nei prossimi [kWeatherLookahead] giri.
   static Future<List<String>> useWeather(String uid, String party) async {
     await _consume(uid, ItemId.meteo);
+    return weatherRows(party);
+  }
+
+  /// Eventi previsti nei prossimi [kWeatherLookahead] giri (Radar meteo, Preveggenza).
+  static Future<List<String>> weatherRows(String party) async {
     final snap = await TableService.eventsCol(party).get();
     final round = TableClock.round;
     final rows = <MapEntry<int, String>>[];

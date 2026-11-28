@@ -4,9 +4,12 @@ import 'package:provider/provider.dart';
 
 import '../geo.dart';
 import '../gyms.dart';
+import '../abilities.dart';
 import '../items.dart';
 import '../mode.dart';
+import '../services/ability_service.dart';
 import '../services/item_service.dart';
+import '../services/session.dart';
 import '../services/location_service.dart';
 import '../table/zones.dart';
 import '../theme.dart';
@@ -128,11 +131,15 @@ class _ShopBodyState extends State<_ShopBody> {
       builder: (context, posSnap) {
         return StreamBuilder<Map<String, dynamic>?>(
           stream: ItemService.watchUser(widget.uid),
-          builder: (context, snap) {
+          builder: (context, snap) => StreamBuilder<Map<String, dynamic>?>(
+            // passive del Pokémon: Cliente abituale (prezzi) e Lega (borsa)
+            stream: AbilityService.watchPokemon(widget.uid, context.read<Session>().pokemonId!),
+            builder: (context, pkSnap) {
+            final passives = passivesOf(pkSnap.data);
             final user = snap.data;
             final inv = ItemService.readInventory(user);
             final coins = ItemService.coinsOf(user);
-            final full = ItemService.bagCount(inv) >= kBagLimit;
+            final full = ItemService.bagCount(inv) >= bagLimitFor(passives, kBagLimit);
             final waiting = !kTableMode && !widget.craftOnly && posSnap.connectionState != ConnectionState.done;
             final shop = _shop(user, posSnap.data);
             final showShop = !widget.craftOnly;
@@ -159,7 +166,7 @@ class _ShopBodyState extends State<_ShopBody> {
                   child: Text(shop.closed!, style: const TextStyle(color: Pal.sub)),
                 )
               else
-                for (final item in shop.stock) _row(item, inv, coins, full, ItemService.priceFor(item, user)),
+                for (final item in shop.stock) _row(item, inv, coins, full, ItemService.priceFor(item, user, passives: passives)),
               if (!showShop)
                 const Text('L’emporio si apre dalla tab Tavolo, quando sei in un settore cittadino.',
                     style: TextStyle(color: Pal.sub, fontSize: 12)),
@@ -180,7 +187,8 @@ class _ShopBodyState extends State<_ShopBody> {
                 style: const TextStyle(color: Pal.sub, fontSize: 12, height: 1.4),
               ),
             ]);
-          },
+            },
+          ),
         );
       },
     );

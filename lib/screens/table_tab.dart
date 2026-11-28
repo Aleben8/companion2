@@ -6,7 +6,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
+import '../abilities.dart';
 import '../mode.dart';
+import '../services/ability_service.dart';
 import '../services/battle_service.dart';
 import '../services/item_service.dart';
 import '../services/live_service.dart';
@@ -46,6 +48,10 @@ class _TableTabState extends State<TableTab> {
   bool _manualNext = false; // modalità eventi scelta prima dell'avvio
   bool _masterOpen = false; // scheda Master aperta o chiusa
   String? _shield; // zona protetta da un'Ombrello di bioma attivo
+  // abilità: passive del tuo Pokémon ed effetti in corso sulla mappa (per i settori bloccati delle zone)
+  StreamSubscription? _fxSub, _pkSub;
+  List<Map<String, dynamic>> _effects = const [];
+  Set<String> _passives = const {};
 
   Session get _s => context.read<Session>();
 
@@ -59,11 +65,33 @@ class _TableTabState extends State<TableTab> {
     try {
       _party = await PartyService.actualParty(_s.userName!);
       if (_party != null) _master = await PartyService.isMaster(_party!, _s.userName!);
+      if (_party != null) {
+        _fxSub = AbilityService.watchEffects(_party!).listen((q) {
+          if (mounted) setState(() => _effects = [for (final d in q.docs) {...d.data(), 'id': d.id}]);
+        });
+      }
+      _pkSub = AbilityService.watchPokemon(_s.userName!, _s.pokemonId!).listen((p) {
+        if (mounted) setState(() => _passives = passivesOf(p));
+      });
     } catch (e) {
       debugPrint('Errore caricamento tavolo: $e');
     }
     if (mounted) setState(() => _loading = false);
   }
+
+  @override
+  void dispose() {
+    _fxSub?.cancel();
+    _pkSub?.cancel();
+    super.dispose();
+  }
+
+  Mobility get _mob => Mobility(
+        uid: _s.userName,
+        itemShield: _shield,
+        passives: _passives,
+        effects: [for (final e in _effects) if (AbilityService.effectLive(e, TableClock.round)) e],
+      );
 
   Future<void> _run(Future<void> Function() f, {String? ok}) async {
     setState(() => _busy = true);
@@ -1249,7 +1277,7 @@ class _TableTabState extends State<TableTab> {
   Widget _zoneCard(ZoneSpec z, Map? pos, List<Map<String, dynamic>> events, Map<String, dynamic> st, String me) {
     final colors = typeColors(z.type);
     final mineZone = pos?['zone'] == z.id;
-    final blocked = TableService.blockedSectors(events, z.id, shield: _shield);
+    final blocked = TableService.blockedSectors(events, z.id, mob: _mob);
     final zoneEvents = events.where((e) => e['zone'] == z.id && (e['status'] == 'active' || e['status'] == 'announced')).toList();
     final links = TableService.linksOf(st);
     final linked = [

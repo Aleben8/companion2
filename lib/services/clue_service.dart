@@ -3,10 +3,12 @@ import 'dart:math';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:geolocator/geolocator.dart';
 
+import '../abilities.dart';
 import '../geo.dart';
 import '../items.dart';
 import '../mode.dart';
 import '../table/sectors.dart';
+import 'ability_service.dart';
 import 'item_service.dart';
 import 'live_service.dart';
 import 'party_service.dart';
@@ -168,6 +170,7 @@ class ClueService {
       if (me?['spotted'] is Map) throw Exception('Ti hanno notato: prima elùdili (azione o Fune di fuga)');
       await TableService.loadLayout(party);
       sectorType = TableLayout.typeOf('${myPos['zone']}', (myPos['sector'] as num).toInt());
+      await _assertNotDistracted(party, uid, myPos);
       await TableService.spendAction(party, uid); // cercare è un'azione
     } else {
       if (pos == null) throw Exception('Posizione non disponibile');
@@ -180,11 +183,13 @@ class ClueService {
       final here = u?['pos'] as Map?;
       if (here != null) {
         final blocked = TableService.blockedSectors(await TableService.activeEvents(party), here['zone'] as String,
-            shield: ItemService.shieldZone(u));
+            mob: await AbilityService.mobility(party, uid, u));
         if (blocked.contains((here['sector'] as num?)?.toInt())) {
-          throw Exception('Questo settore è bloccato da un evento: spostati o usa una Chiave');
+          throw Exception('Questo settore è bloccato: spostati o usa una Chiave');
         }
+        await _assertNotDistracted(party, uid, here);
       }
+      myPos = here;
       await ref.set({
         'searchReadyAt': Timestamp.fromDate(DateTime.now().add(const Duration(minutes: kLiveSearchCooldownMinutes))),
       }, SetOptions(merge: true));
@@ -196,7 +201,8 @@ class ClueService {
       uid,
       kTableMode
           ? {'kind': 'search', 'zone': myPos!['zone'], 'sector': myPos['sector'], 'strength': traceStrength(sectorType)}
-          : {'kind': 'search', 'lat': pos!.latitude, 'lng': pos.longitude},
+          // dal vivo anche la zona (per la Pioggia)
+          : {'kind': 'search', 'lat': pos!.latitude, 'lng': pos.longitude, if (myPos != null) 'zone': myPos['zone']},
     );
 
     final q = await clues(party).where('status', isEqualTo: 'hidden').get();
@@ -226,7 +232,7 @@ class ClueService {
     final itemChance = sectorType == SectorType.impervio ? kImperviousSearchItemChance : kSearchItemChance;
     if (found.isEmpty && _rnd.nextDouble() < itemChance) {
       final id = ItemService.randomDrop(rnd: _rnd);
-      final txt = await ItemService.grant(uid, items: [id]);
+      final txt = await ItemService.grant(uid, items: await ItemService.luckyDrops(uid, [id], rnd: _rnd)); // Fortuna
       item = txt;
     }
     return SearchResult(found, item);
@@ -235,9 +241,11 @@ class ClueService {
   /// "Ho preso la carta": dichiara di avere l'indizio (lo vedono tutti, senza il testo).
   /// Se l'indizio NON era destinato a te, ricevi uno strumento a caso come bonus
   /// (è il premio per aver rischiato di diventare un bersaglio). Restituisce il nome dello strumento, o null.
-  static Future<String?> declare(String party, String clueId, String uid) {
+  static Future<String?> declare(String party, String clueId, String uid) async {
     final ref = clues(party).doc(clueId);
     final uref = ItemService.userRef(uid);
+    final limit = await ItemService.bagLimit(uid);
+    final drops = await ItemService.luckyDrops(uid, [ItemService.randomDrop(rnd: _rnd)], rnd: _rnd); // Fortuna
     return _db.runTransaction<String?>((tx) async {
       final c = (await tx.get(ref)).data();
       final u = (await tx.get(uref)).data() ?? {};
@@ -248,12 +256,22 @@ class ClueService {
       final inv = ItemService.readInventory(u);
       String? name;
       if (bonus) {
-        final id = ItemService.randomDrop(rnd: _rnd);
-        name = ItemService.addItem(inv, id.name) ? itemDef(id).name : '${itemDef(id).name} (borsa piena: perso)';
+        name = [
+          for (final id in drops)
+            ItemService.addItem(inv, id.name, 1, limit) ? itemDef(id).name : '${itemDef(id).name} (borsa piena: perso)',
+        ].join(' e ');
       }
       tx.set(uref, {'inventory': inv, 'coins': ItemService.coinsOf(u) + kCoinsDeclare}, SetOptions(merge: true));
       return name ?? '';
     });
+  }
+}
+
+/// Distrazione: per 1 giro chi è nel settore di chi l'ha usata (tranne lui) non può cercare.
+Future<void> _assertNotDistracted(String party, String uid, Map pos) async {
+  final fx = await AbilityService.activeEffects(party);
+  if (effectsAt(fx, Ab.distrazione, '${pos['zone']}', sector: (pos['sector'] as num?)?.toInt(), notOwner: uid).isNotEmpty) {
+    throw Exception('Qualcuno ti distrae: in questo settore non puoi cercare per questo giro');
   }
 }
 

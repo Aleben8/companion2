@@ -114,6 +114,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 const StatusBanner(),
                 // dopo una palestra vinta: la scelta della nuova abilità resta in cima finché non scegli
                 const AbilityOfferCard(),
+                AbilityAlerts(onBattle: _openBattle),
                 const SizedBox(height: 8),
                 switch (_tab) {
                   HomeTab.stats => _StatsPanel(pk: pk, color: color, onBattle: _openBattle),

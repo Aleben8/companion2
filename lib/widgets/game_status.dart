@@ -149,7 +149,7 @@ class GameWatcher extends StatefulWidget {
 }
 
 class _GameWatcherState extends State<GameWatcher> {
-  StreamSubscription? _userSub, _trapSub, _alarmSub, _eventSub;
+  StreamSubscription? _userSub, _trapSub, _alarmSub, _eventSub, _noticeSub;
   String? _party;
   List<QueryDocumentSnapshot<Map<String, dynamic>>> _traps = [];
   List<QueryDocumentSnapshot<Map<String, dynamic>>> _alarms = [];
@@ -179,6 +179,7 @@ class _GameWatcherState extends State<GameWatcher> {
     _trapSub?.cancel();
     _alarmSub?.cancel();
     _eventSub?.cancel();
+    _noticeSub?.cancel();
     _party = party;
     _traps = [];
     _alarms = [];
@@ -209,6 +210,16 @@ class _GameWatcherState extends State<GameWatcher> {
         .limit(5)
         .snapshots()
         .listen(_onEvents);
+    // avvisi segreti delle abilità (Gelata, Vedetta, Mente lucida, Imboscata, Sfida...): solo a chi sono destinati
+    _noticeSub = PartyService.party(party).collection('events').where('to', arrayContains: _uid).snapshots().listen((s) {
+      for (final d in s.docs) {
+        final data = d.data();
+        if (data['type'] != 'notice' || !_seenEvents.add('n:${d.id}')) continue;
+        final at = data['at'] is Timestamp ? (data['at'] as Timestamp).toDate() : null;
+        if (at == null || DateTime.now().difference(at).inSeconds > 60) continue;
+        if (mounted) snack(context, '${data['text']}');
+      }
+    });
   }
 
   void _onEvents(QuerySnapshot<Map<String, dynamic>> snap) {
@@ -245,7 +256,10 @@ class _GameWatcherState extends State<GameWatcher> {
       final pos = context.read<LocationService>().position;
       var where = '';
       if (data['zone'] != null) {
-        where = ' — in ${zoneSpec('${data['zone']}').name}, settore ${data['sector']}';
+        // con Ombra (o Depistaggio) si vede solo la zona
+        where = data['zone'] == 'fuori'
+            ? ' — fuori dalle zone di gioco'
+            : ' — in ${zoneSpec('${data['zone']}').name}${data['sector'] == null ? '' : ', settore ${data['sector']}'}';
       } else if (pos != null) {
         final lat = (data['lat'] as num).toDouble();
         final lng = (data['lng'] as num).toDouble();
@@ -299,6 +313,7 @@ class _GameWatcherState extends State<GameWatcher> {
     _trapSub?.cancel();
     _alarmSub?.cancel();
     _eventSub?.cancel();
+    _noticeSub?.cancel();
     // passando al tavolo (o uscendo) il GPS non serve più
     if (_gps) _loc.stop();
     super.dispose();

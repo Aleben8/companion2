@@ -3,10 +3,12 @@ import 'dart:math';
 import 'package:cloud_firestore/cloud_firestore.dart';
 
 import '../abilities.dart';
+import '../constants.dart';
 import '../items.dart';
 import '../mode.dart';
 import '../table/phases.dart';
 import '../table/zones.dart';
+import 'battle_service.dart';
 import 'item_service.dart';
 import 'live_service.dart';
 import 'party_service.dart';
@@ -235,6 +237,8 @@ class AbilityService {
     if (me['wildEncounter'] is Map) throw Exception('Prima affronta o sfuggi al Pokémon selvatico');
     if (me['spotted'] is Map) throw Exception('Ti hanno notato: prima elùdili (azione o Fune di fuga)');
     if (!kTableMode) LiveService.assertNotBusy(me);
+    // bersaglio, settore, ingredienti: si controlla prima di pagare
+    await _precheck(party: party, uid: uid, def: def, me: me, target: target, sector: sector, recipe: recipe);
 
     // il costo: al tavolo un'azione, dal vivo un'attesa breve (le reazioni non costano nulla)
     if (!def.reaction) {
@@ -254,17 +258,442 @@ class AbilityService {
         if (def.effectRounds > 0) 'abilityActiveKey': key,
       }, SetOptions(merge: true));
     });
-    return _apply(party: party, uid: uid, def: def, me: me, round: round);
+    return _apply(party: party, uid: uid, def: def, me: me, round: round, target: target, sector: sector, recipe: recipe);
   }
 
-  /// Effetto dell'attiva (le singole abilità sono implementate nelle fasi 9.C e 9.D).
+  // ------------------------------------------------------------- controlli prima di pagare
+
+  /// Controlla che l'attiva si possa davvero fare (bersaglio, settore, ingredienti...) prima di pagare l'azione.
+  static Future<void> _precheck({
+    required String party,
+    required String uid,
+    required AbilityDef def,
+    required Map<String, dynamic> me,
+    String? target,
+    int? sector,
+    int? recipe,
+  }) async {
+    final pos = me['pos'] as Map?;
+    const needsPlace = {
+      Ab.distrazione, Ab.fiammata, Ab.pioggia, Ab.rovi, Ab.impulso, Ab.gelata, Ab.sfida, Ab.escaTossica, Ab.scavo,
+      Ab.sismo, Ab.vedetta, Ab.fiuto, Ab.sciame, Ab.barricata, Ab.spavento, Ab.borseggio, Ab.imboscata, Ab.sonda,
+      Ab.benedizione,
+    };
+    if (needsPlace.contains(def.key) && pos == null) {
+      throw Exception(kTableMode ? 'Non sei ancora sulla mappa' : 'Devi essere dentro una zona di gioco');
+    }
+    const heal = {Ab.idratazione, Ab.sintesi, Ab.ibernazione, Ab.benedizione};
+    if (heal.contains(def.key) && ItemService.isActive(me['koUntil'])) {
+      throw Exception('Il tuo Pokémon è esausto: serve il recupero o un Revitalizzante');
+    }
+    switch (def.key) {
+      case Ab.sfida:
+      case Ab.spavento:
+        if (target == null) throw Exception('Scegli un giocatore');
+        if (!(await playersNear(party, uid)).contains(target)) throw Exception('$target non è nel tuo settore');
+        if (def.key == Ab.sfida) await _assertCanChallenge(party, uid, target);
+      case Ab.sismo:
+        if (sector == null || !(await quakeSectors(party, uid)).contains(sector)) throw Exception('Scegli un altro settore');
+      case Ab.forgia:
+        final opts = forgeOptions();
+        if (recipe == null || recipe < 0 || recipe >= opts.length) throw Exception('Scegli una ricetta');
+        final inv = ItemService.readInventory(me);
+        if ((inv[opts[recipe].pay.name] ?? 0) <= 0) throw Exception('Ti serve 1 ${itemDef(opts[recipe].pay).name}');
+      case Ab.impulso:
+      case Ab.fiuto:
+        await ItemService.assertNoSwarm(party, uid, me);
+    }
+  }
+
+  // --------------------------------------------------------------------- effetti
+
+  /// Effetto dell'attiva. Quelle "per la prossima lotta" (e Ardore) le legge la battaglia (fase 9.D).
   static Future<AbilityResult> _apply({
     required String party,
     required String uid,
     required AbilityDef def,
     required Map<String, dynamic> me,
     required int round,
+    String? target,
+    int? sector,
+    int? recipe,
   }) async {
-    return AbilityResult('${def.name} usata');
+    final pos = me['pos'] as Map?;
+    final zone = pos == null ? null : '${pos['zone']}';
+    final here = pos == null ? null : _i(pos['sector']);
+    final place = zone == null ? '' : _place(zone, here!);
+    Future<void> map(String kind, {int? at, bool wholeZone = false}) => addEffect(party,
+        kind: kind, owner: uid, zone: zone, sector: wholeZone ? null : (at ?? here), rounds: def.duration);
+    switch (def.key) {
+      case Ab.racimolare:
+        await ItemService.userRef(uid).set({'coins': FieldValue.increment(kGatherCoins)}, SetOptions(merge: true));
+        return const AbilityResult('+$kGatherCoins 🪙');
+      case Ab.distrazione:
+        await map(Ab.distrazione);
+        return AbilityResult('Per 1 giro nessun altro può cercare in $place');
+      case Ab.fiammata:
+        await map(Ab.fiammata, wholeZone: true);
+        return AbilityResult('${zoneSpec(zone!).name} è rovente: per 1 giro chi entra paga +1 azione');
+      case Ab.pioggia:
+        await map(Ab.pioggia, wholeZone: true);
+        var n = 0;
+        for (final d in (await PartyService.party(party).collection('traces').where('zone', isEqualTo: zone).get()).docs) {
+          if (_i(d.data()['strength'], 1) > 1) {
+            await d.reference.update({'strength': 1});
+            n++;
+          }
+        }
+        return AbilityResult('Piove su ${zoneSpec(zone!).name}: ${n == 0 ? 'nessuna traccia da lavare' : '$n tracce ora deboli'}; '
+            'per 1 giro niente bonus Fuoco degli eventi');
+      case Ab.idratazione:
+        final r = await _heal(uid, hp: kHydrateHp, clearStatus: true);
+        return AbilityResult('Idratazione: +${r.hp} PS, nessuno status alterato');
+      case Ab.sintesi:
+        final r = await _heal(uid, hp: kSynthesisHp, energy: kSynthesisEnergy);
+        return AbilityResult('Sintesi: +${r.hp} PS, +${r.energy} energie');
+      case Ab.rovi:
+        await map(Ab.rovi);
+        return AbilityResult('Rovi in $place per 2 giri: chi entra perde $kBrambleDamage PS e lascia una traccia evidente');
+      case Ab.impulso:
+        final found = await ItemService.radarScan(uid, party, null, zoneOnly: true, consume: false);
+        return AbilityResult('Impulso su ${zoneSpec(zone!).name}',
+            lines: found.isEmpty ? ['Nessuno nella tua zona.'] : [for (final c in found) '${c.name}: ${c.place ?? 'qui vicino'}']);
+      case Ab.gelata:
+        await map(Ab.gelata);
+        return AbilityResult('$place è ghiacciato per 2 giri: chi entra paga +1 azione e tu lo saprai');
+      case Ab.ibernazione:
+        await addEffect(party, kind: Ab.ibernazione, owner: uid, rounds: def.duration);
+        final r = await _heal(uid, hp: kHibernateHp);
+        return AbilityResult('Ibernazione: +${r.hp} PS; per 1 giro nessuno può sfidarti (e tu non puoi sfidare)');
+      case Ab.sfida:
+        final id = await challenge(party: party, uid: uid, target: target!);
+        return AbilityResult('Sfida lanciata a $target: si combatte!', battleId: id);
+      case Ab.escaTossica:
+        await map(Ab.escaTossica);
+        return AbilityResult('Esca tossica in $place per 2 giri: il primo che entra sarà avvelenato');
+      case Ab.scavo:
+        if (_rnd.nextDouble() >= kDigChance) return const AbilityResult('Hai scavato, ma non hai trovato niente');
+        final txt = await ItemService.grant(uid, items: await ItemService.luckyDrops(uid, [ItemService.randomDrop(rnd: _rnd)]));
+        return AbilityResult('Scavando hai trovato: $txt');
+      case Ab.sismo:
+        await map(Ab.sismo, at: sector);
+        return AbilityResult('Sismo: ${_place(zone!, sector!)} è bloccato per 1 giro');
+      case Ab.ricognizione:
+        return AbilityResult('Ricognizione', lines: await _recon(party));
+      case Ab.vedetta:
+        await map(Ab.vedetta, wholeZone: true);
+        return AbilityResult('Vedetta su ${zoneSpec(zone!).name} per 2 giri: saprai chi entra');
+      case Ab.preveggenza:
+        final rows = await ItemService.weatherRows(party);
+        return AbilityResult('Preveggenza', lines: rows.isEmpty ? ['Nessun evento previsto nei prossimi 2 giri.'] : rows);
+      case Ab.depistaggio:
+        await addEffect(party, kind: Ab.depistaggio, owner: uid, rounds: def.duration);
+        return const AbilityResult('Depistaggio per 2 giri: chi ti cerca con Radar o Calmanella vede una zona a caso');
+      case Ab.fiuto:
+        final rep = await ItemService.useLens(uid, party, null, consume: false, sectorOnly: true);
+        final lines = [...rep.searched, ...rep.moves];
+        return AbilityResult('Fiuto', lines: lines.isEmpty ? ['Nessuna traccia recente nel tuo settore.'] : lines);
+      case Ab.sciame:
+        await map(Ab.sciame, wholeZone: true);
+        return AbilityResult('Sciame su ${zoneSpec(zone!).name}: per 1 giro nessun altro può usare Radar, Lente o Sensore');
+      case Ab.barricata:
+        await map(Ab.barricata);
+        return AbilityResult('Barricata: $place è chiuso agli altri per 1 giro');
+      case Ab.svanire:
+        await addEffect(party, kind: Ab.svanire, owner: uid, rounds: def.duration);
+        return const AbilityResult('Svanisci per 2 giri: invisibile al Radar, nessuna traccia');
+      case Ab.spavento:
+        await _scare(party, target!);
+        await notice(party, [target], '👻 $uid ti ha spaventato: perdi ${kTableMode ? '1 azione' : '$kLivePenaltyMinutes minuti'}');
+        return AbilityResult('Hai spaventato $target');
+      case Ab.borseggio:
+        return AbilityResult(await _pickpocket(party, uid));
+      case Ab.imboscata:
+        await map(Ab.imboscata);
+        return AbilityResult('Imboscata in $place per 2 giri: se qualcuno entra potrai sfidarlo');
+      case Ab.forgia:
+        final o = forgeOptions()[recipe!];
+        await ItemService.craftWith(uid, o.recipe, o.pay);
+        return AbilityResult('Forgia: ${itemDef(o.recipe.output).name} creato con 1 ${itemDef(o.pay).name}');
+      case Ab.sonda:
+        final lines = await _probe(party, uid, zone!, here!);
+        return AbilityResult('Sonda su $place', lines: lines.isEmpty ? ['Non c’era niente da disattivare.'] : lines);
+      case Ab.benedizione:
+        final mine = await _heal(uid, hp: kBlessingHp, clearStatus: true);
+        final others = await playersNear(party, uid);
+        for (final o in others) {
+          if (ItemService.isActive((await ItemService.userRef(o).get()).data()?['koUntil'])) continue;
+          await _heal(o, hp: kBlessingHp, clearStatus: true);
+          await notice(party, [o], '✨ $uid ti ha benedetto: +$kBlessingHp PS e niente status alterati');
+        }
+        return AbilityResult('Benedizione: +${mine.hp} PS${others.isEmpty ? '' : ' a te e a ${others.join(', ')}'}');
+    }
+    // per la prossima lotta (e Ardore): li applica la battaglia
+    return AbilityResult(def.nextBattle
+        ? '${def.name}: vale nella prossima lotta entro $kNextBattleRounds giri'
+        : '${def.name} attiva per ${def.duration} ${def.duration == 1 ? 'giro' : 'giri'}');
   }
+
+  static String _place(String zone, int sector) => kTableMode
+      ? '${zoneSpec(zone).name}, ${TableLayout.title(zone, sector)}'
+      : '${zoneSpec(zone).name}, ${LiveService.sectorLabel(zone, sector)}';
+
+  /// Cura fuori dalla lotta (PS, energie, status). Restituisce quanto ha recuperato.
+  static Future<({int hp, int energy})> _heal(String uid, {int hp = 0, int energy = 0, bool clearStatus = false}) async {
+    final ref = await pokemonRef(uid);
+    if (ref == null) return (hp: 0, energy: 0);
+    return _db.runTransaction<({int hp, int energy})>((tx) async {
+      final p = (await tx.get(ref)).data() ?? {};
+      final h = BattleService.startHp(p), e = BattleService.startEnergy(p);
+      final nh = min(kBaseHp, h + hp), ne = min(kBaseEnergy, e + energy);
+      tx.set(ref, {
+        'currentHp': nh,
+        'currentEnergy': ne,
+        if (clearStatus) 'currentStatus': FieldValue.delete(),
+      }, SetOptions(merge: true));
+      return (hp: nh - h, energy: ne - e);
+    });
+  }
+
+  /// Fotosintesi: +2 PS a ogni nuovo giro, ovunque (non da esausto).
+  static Future<void> photosynthesis(String uid) async {
+    final u = (await ItemService.userRef(uid).get()).data();
+    if (ItemService.isActive(u?['koUntil'])) return;
+    final ref = await pokemonRef(uid, u);
+    if (ref == null) return;
+    final p = (await ref.get()).data();
+    if (!passivesOf(p).contains(Ab.fotosintesi)) return;
+    final hp = BattleService.startHp(p ?? const {});
+    if (hp < kBaseHp) await ref.set({'currentHp': min(kBaseHp, hp + kPhotosynthesisHp)}, SetOptions(merge: true));
+  }
+
+  /// Spavento: il bersaglio perde 1 azione (dal vivo: 2 minuti di attesa).
+  static Future<void> _scare(String party, String target) async {
+    final ref = ItemService.userRef(target);
+    final u = (await ref.get()).data();
+    if (!kTableMode) {
+      await ref.set(LiveService.addBusy(u, kLivePenaltyMinutes), SetOptions(merge: true));
+    } else if (kTableTurns) {
+      await ref.set({'actionPenalty': FieldValue.increment(1)}, SetOptions(merge: true));
+    } else {
+      // fasi del giorno: fermo finché il gruppo non fa un'altra azione (si somma a un'attesa già in corso)
+      final group = await TableService.groupActions(party);
+      await ref.set({'waitUntilAction': max(group, _i(u?['waitUntilAction'])) + 1}, SetOptions(merge: true));
+    }
+  }
+
+  /// Borseggio: un giocatore a caso nel tuo settore ti passa uno strumento a caso (non la MT).
+  static Future<String> _pickpocket(String party, String uid) async {
+    final near = await playersNear(party, uid)..shuffle(_rnd);
+    if (near.isEmpty) return 'Non c’era nessuno da borseggiare: l’abilità è andata sprecata';
+    final victim = near.first;
+    final myLimit = bagLimitFor(await passives(uid), kBagLimit);
+    final got = await _db.runTransaction<String?>((tx) async {
+      final vRef = ItemService.userRef(victim), mRef = ItemService.userRef(uid);
+      final vi = ItemService.readInventory((await tx.get(vRef)).data());
+      final mi = ItemService.readInventory((await tx.get(mRef)).data());
+      final pool = [for (final e in vi.entries) if (e.value > 0 && _tradable(e.key)) e.key];
+      if (pool.isEmpty) return null;
+      final key = pool[_rnd.nextInt(pool.length)];
+      if (!ItemService.addItem(mi, key, 1, myLimit)) return '';
+      vi[key] = vi[key]! - 1;
+      tx.set(vRef, {'inventory': vi}, SetOptions(merge: true));
+      tx.set(mRef, {'inventory': mi}, SetOptions(merge: true));
+      return key;
+    });
+    if (got == null) return '$victim non aveva niente da rubare';
+    if (got.isEmpty) return 'La tua borsa è piena: non riesci a prendere niente';
+    final name = itemDef(ItemId.values.byName(got)).name;
+    await notice(party, [victim], '🫳 Qualcuno ti ha borseggiato: ti manca un $name');
+    return 'Hai borseggiato $victim: $name';
+  }
+
+  static bool _tradable(String key) {
+    for (final i in kItems) {
+      if (i.key == key) return i.tradable;
+    }
+    return false;
+  }
+
+  /// Ricognizione: zone con eventi in corso o annunciati e quanti giocatori ci sono in ogni zona (senza nomi).
+  static Future<List<String>> _recon(String party) async {
+    final events = (await TableService.eventsCol(party).get()).docs.map((d) => d.data());
+    final counts = <String, int>{};
+    for (final p in (await PartyService.players(party).get()).docs) {
+      final z = ((await ItemService.userRef(p.id).get()).data()?['pos'] as Map?)?['zone'];
+      if (z != null) counts['$z'] = (counts['$z'] ?? 0) + 1;
+    }
+    return [
+      for (final z in TableLayout.zonesInPlay)
+        '${z.name}: ${counts[z.id] ?? 0} ${(counts[z.id] ?? 0) == 1 ? 'giocatore' : 'giocatori'}'
+            '${[
+          for (final e in events)
+            if (e['zone'] == z.id && (e['status'] == 'active' || e['status'] == 'announced'))
+              ' · ${e['status'] == 'active' ? 'in corso' : 'in arrivo'}: ${e['name']}',
+        ].join()}',
+    ];
+  }
+
+  /// Sonda: disattiva nel tuo settore Trappole, Allarmi, Gelata ed Esca tossica e dice di chi erano.
+  static Future<List<String>> _probe(String party, String uid, String zone, int sector) async {
+    final out = <String>[];
+    final live = kTableMode ? null : await LiveService.zones(party);
+    bool here(Map<String, dynamic> d) {
+      if (d['zone'] != null) return d['zone'] == zone && _i(d['sector']) == sector;
+      if (live == null || d['lat'] is! num) return false;
+      final at = LiveService.locate(live, (d['lat'] as num).toDouble(), (d['lng'] as num).toDouble());
+      return at?['zone'] == zone && _i(at?['sector']) == sector;
+    }
+
+    for (final (col, label) in [('traps', 'Trappola'), ('alarms', 'Allarme')]) {
+      for (final d in (await PartyService.party(party).collection(col).where('active', isEqualTo: true).get()).docs) {
+        if (d.data()['ownerUid'] == uid || !here(d.data())) continue;
+        await d.reference.update({'active': false, 'disabledBy': uid});
+        out.add('$label di ${d.data()['ownerUid']} disattivata');
+      }
+    }
+    for (final e in await activeEffects(party)) {
+      if ((e['kind'] != Ab.gelata && e['kind'] != Ab.escaTossica) || e['owner'] == uid) continue;
+      if (e['zone'] != zone || _i(e['sector']) != sector) continue;
+      await effectsCol(party).doc(e['id'] as String).update({'active': false, 'disabledBy': uid});
+      out.add('${abilityDef('${e['kind']}')!.name} di ${e['owner']} disattivata');
+    }
+    return out;
+  }
+
+  // ------------------------------------------------------------------ ingressi
+
+  /// Qualcuno ([uid]) è entrato in [zone]/[sector] (al tavolo con `moveTo`, dal vivo dal GPS):
+  /// Rovi, Esca tossica, Gelata (avviso al proprietario), Imboscata (avviso con Sfida) e Vedetta.
+  /// Restituisce i messaggi per chi è entrato.
+  static Future<List<String>> onEnter({
+    required String party,
+    required String uid,
+    required String? fromZone,
+    required String zone,
+    required int sector,
+  }) async {
+    final fx = await activeEffects(party);
+    if (fx.isEmpty) return const [];
+    final msgs = <String>[];
+    final user = (await ItemService.userRef(uid).get()).data();
+    final pas = await passives(uid, user);
+    final where = _place(zone, sector);
+    if (effectsAt(fx, Ab.rovi, zone, sector: sector, notOwner: uid).isNotEmpty && !ItemService.isActive(user?['koUntil'])) {
+      final ref = await pokemonRef(uid, user);
+      if (ref != null) {
+        final hp = BattleService.startHp((await ref.get()).data() ?? const {});
+        await ref.set({'currentHp': max(1, hp - kBrambleDamage)}, SetOptions(merge: true));
+        msgs.add('Rovi! Il tuo Pokémon perde $kBrambleDamage PS e lasci una traccia evidente.');
+      }
+    }
+    for (final e in effectsAt(fx, Ab.escaTossica, zone, sector: sector, notOwner: uid)) {
+      if (pas.contains(Ab.immunita)) break; // Immunità: il Danno nel tempo non ti colpisce
+      final ref = effectsCol(party).doc(e['id'] as String);
+      final hit = await _db.runTransaction<bool>((tx) async {
+        final cur = (await tx.get(ref)).data();
+        if (cur == null || cur['active'] == false) return false;
+        tx.update(ref, {'active': false, 'triggeredBy': uid});
+        return true;
+      });
+      if (!hit) continue;
+      final pref = await pokemonRef(uid, user);
+      await pref?.set({'currentStatus': BattleService.poisonStatus()}, SetOptions(merge: true));
+      msgs.add('Esca tossica! Il tuo Pokémon è avvelenato.');
+      break;
+    }
+    for (final e in effectsAt(fx, Ab.gelata, zone, sector: sector, notOwner: uid)) {
+      await notice(party, ['${e['owner']}'], '❄️ $uid è entrato nel tuo settore ghiacciato ($where)');
+    }
+    for (final e in effectsAt(fx, Ab.imboscata, zone, sector: sector, notOwner: uid)) {
+      final owner = '${e['owner']}';
+      await ItemService.userRef(owner).set({
+        'ambush': {'target': uid, 'zone': zone, 'sector': sector, 'round': TableClock.round, 'effect': e['id']},
+      }, SetOptions(merge: true));
+      await notice(party, [owner], '🌑 $uid è arrivato nel tuo settore ($where): puoi sfidarlo con l’Imboscata');
+    }
+    if (fromZone != zone) {
+      for (final e in effectsAt(fx, Ab.vedetta, zone, notOwner: uid)) {
+        await notice(party, ['${e['owner']}'], '🦅 Vedetta: $uid è entrato in ${zoneSpec(zone).name}');
+      }
+    }
+    return msgs;
+  }
+
+  /// Avviso segreto a [to] (a comparsa nella Home; vedi GameWatcher).
+  static Future<void> notice(String party, List<String> to, String text) =>
+      PartyService.party(party).collection('events').add({
+        'type': 'notice',
+        'to': to,
+        'text': text,
+        'round': TableClock.round,
+        'at': FieldValue.serverTimestamp(),
+      });
+
+  // ------------------------------------------------------------- effetti personali
+
+  /// [uid] ha in corso l'effetto personale [kind] (Svanire, Depistaggio, Ibernazione)?
+  static bool personal(List<Map<String, dynamic>> effects, String kind, String uid) =>
+      effects.any((e) => e['kind'] == kind && e['owner'] == uid && e['zone'] == null);
+
+  static Future<bool> hasPersonal(String party, String kind, String uid) async => personal(await activeEffects(party), kind, uid);
+
+  /// Movimento di [uid]: protezioni, passive ed effetti delle abilità in corso.
+  static Future<Mobility> mobility(String party, String uid, [Map<String, dynamic>? user]) async {
+    final u = user ?? (await ItemService.userRef(uid).get()).data();
+    return Mobility(
+      uid: uid,
+      itemShield: ItemService.shieldZone(u),
+      passives: await passives(uid, u),
+      effects: await activeEffects(party),
+    );
+  }
+
+  /// Zone i cui eventi non toccano [uid]: protezione di bioma attiva + passive (Sangue caldo, Nuotatore...).
+  static Future<Set<String>> shieldedZones(String uid, [Map<String, dynamic>? user]) async {
+    final u = user ?? (await ItemService.userRef(uid).get()).data();
+    return {if (ItemService.shieldZone(u) != null) ItemService.shieldZone(u)!, ...immuneZones(await passives(uid, u))};
+  }
+
+  // ------------------------------------------------------------- sfide tra giocatori
+
+  /// Sfida e Imboscata: niente rifugi, Repellente, Ibernazione o giocatori non disponibili.
+  static Future<void> _assertCanChallenge(String party, String uid, String target) async {
+    await ItemService.assertCanFight(uid, opponentUid: target);
+    await TableService.assertNotInRefuge(uid);
+    await TableService.assertNotInRefuge(target, me: false);
+    final fx = await activeEffects(party);
+    if (personal(fx, Ab.ibernazione, uid)) throw Exception('Sei in Ibernazione: non puoi sfidare');
+    if (personal(fx, Ab.ibernazione, target)) throw Exception('$target è in Ibernazione: non può essere sfidato');
+  }
+
+  /// Lotta obbligata tra [uid] e [target] (Sfida, Imboscata): parte subito e il bersaglio non può rifiutare.
+  static Future<String> challenge({required String party, required String uid, required String target, int firstTurnDice = 0}) async {
+    await _assertCanChallenge(party, uid, target);
+    final id = await BattleService.createForcedBattle(party: party, uid: uid, target: target, firstTurnDice: firstTurnDice);
+    await ItemService.userRef(target).set({'forcedBattle': {'id': id, 'by': uid}}, SetOptions(merge: true));
+    await notice(party, [target], '⚔️ $uid ti ha sfidato: la lotta è iniziata!');
+    return id;
+  }
+
+  /// Imboscata scattata: [uid] sfida chi è entrato nel suo settore (reazione: non costa azioni),
+  /// con +[kAmbushDice] al dado nel primo turno.
+  static Future<String> ambushChallenge(String party, String uid) async {
+    final u = (await ItemService.userRef(uid).get()).data();
+    final a = u?['ambush'];
+    if (a is! Map) throw Exception('Nessuno è caduto nella tua imboscata');
+    await ItemService.userRef(uid).set({'ambush': FieldValue.delete()}, SetOptions(merge: true));
+    final target = '${a['target']}';
+    final fx = await activeEffects(party);
+    if (!fx.any((e) => e['id'] == a['effect'])) throw Exception('L’imboscata è finita');
+    final tpos = (await ItemService.userRef(target).get()).data()?['pos'] as Map?;
+    if (tpos?['zone'] != a['zone'] || _i(tpos?['sector']) != _i(a['sector'])) throw Exception('$target se n’è già andato');
+    return challenge(party: party, uid: uid, target: target, firstTurnDice: kAmbushDice);
+  }
+
+  static Future<void> dismissAmbush(String uid) =>
+      ItemService.userRef(uid).set({'ambush': FieldValue.delete()}, SetOptions(merge: true));
+
+  static Future<void> dismissForcedBattle(String uid) =>
+      ItemService.userRef(uid).set({'forcedBattle': FieldValue.delete()}, SetOptions(merge: true));
 }

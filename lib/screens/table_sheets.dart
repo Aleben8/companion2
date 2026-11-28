@@ -1,7 +1,11 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 
+import '../abilities.dart';
+import '../services/ability_service.dart';
 import '../services/item_service.dart';
+import '../services/session.dart';
 import '../services/table_service.dart';
 import '../table/phases.dart';
 import '../table/sectors.dart';
@@ -55,7 +59,7 @@ Future<void> showTableSheet(BuildContext context, TableSheet which, {required St
 class _TableLive extends StatelessWidget {
   final String party, me;
   final Widget Function(BuildContext context, Map<String, dynamic> st, List<Map<String, dynamic>> events,
-      Map<String, dynamic> user) builder;
+      Map<String, dynamic> user, Mobility mob) builder;
   const _TableLive({required this.party, required this.me, required this.builder});
 
   @override
@@ -65,17 +69,33 @@ class _TableLive extends StatelessWidget {
           stream: TableService.watchEvents(party),
           builder: (context, evSnap) => StreamBuilder<Map<String, dynamic>>(
             stream: ItemService.watchUserFields(me, kTableUserFields),
-            builder: (context, uSnap) {
-              final st = stSnap.data;
-              if (st == null || uSnap.data == null) {
-                return const Center(child: Padding(padding: EdgeInsets.all(24), child: CircularProgressIndicator()));
-              }
-              final events = <Map<String, dynamic>>[
-                for (final d in evSnap.data?.docs ?? const <QueryDocumentSnapshot<Map<String, dynamic>>>[])
-                  {...d.data(), 'id': d.id},
-              ];
-              return builder(context, st, events, uSnap.data!);
-            },
+            builder: (context, uSnap) => StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+              stream: AbilityService.watchEffects(party),
+              builder: (context, fxSnap) => StreamBuilder<Map<String, dynamic>?>(
+                stream: AbilityService.watchPokemon(me, context.read<Session>().pokemonId!),
+                builder: (context, pkSnap) {
+                  final st = stSnap.data;
+                  if (st == null || uSnap.data == null) {
+                    return const Center(child: Padding(padding: EdgeInsets.all(24), child: CircularProgressIndicator()));
+                  }
+                  final events = <Map<String, dynamic>>[
+                    for (final d in evSnap.data?.docs ?? const <QueryDocumentSnapshot<Map<String, dynamic>>>[])
+                      {...d.data(), 'id': d.id},
+                  ];
+                  final round = _i(st['round']);
+                  final mob = Mobility(
+                    uid: me,
+                    itemShield: ItemService.shieldZone(uSnap.data),
+                    passives: passivesOf(pkSnap.data),
+                    effects: [
+                      for (final d in fxSnap.data?.docs ?? const <QueryDocumentSnapshot<Map<String, dynamic>>>[])
+                        if (AbilityService.effectLive(d.data(), round)) {...d.data(), 'id': d.id},
+                    ],
+                  );
+                  return builder(context, st, events, uSnap.data!, mob);
+                },
+              ),
+            ),
           ),
         ),
       );
@@ -130,9 +150,8 @@ class _MovementSheetState extends State<_MovementSheet> {
   Widget build(BuildContext context) => _TableLive(
         party: widget.party,
         me: widget.me,
-        builder: (context, st, events, user) {
+        builder: (context, st, events, user, mob) {
           final pos = user['pos'] as Map?;
-          final shield = ItemService.shieldZone(user);
           final pending = user['wildEncounter'] != null || user['spotted'] != null;
           final moveBlock = tableBlock(st, user, widget.me, ActKind.move);
           final zoneBlock = tableBlock(st, user, widget.me, ActKind.zone);
@@ -146,7 +165,7 @@ class _MovementSheetState extends State<_MovementSheet> {
                 state: st,
                 events: events,
                 pos: pos,
-                shield: shield,
+                mob: mob,
                 myTurn: moveBlock == null,
                 blockReason: moveBlock,
                 actionsLeft: actionsLeft,
@@ -161,7 +180,7 @@ class _MovementSheetState extends State<_MovementSheet> {
               state: st,
               events: events,
               pos: pos,
-              shield: shield,
+              mob: mob,
               myTurn: zoneBlock == null,
               blockReason: zoneBlock,
               actionsLeft: actionsLeft,
@@ -186,7 +205,7 @@ class _ToolsSheet extends StatelessWidget {
   Widget build(BuildContext context) => _TableLive(
         party: party,
         me: me,
-        builder: (context, st, events, user) {
+        builder: (context, st, events, user, mob) {
           final closed = tableShopClosedReason(user['pos'] as Map?);
           return ListView(padding: const EdgeInsets.fromLTRB(16, 0, 16, 24), children: [
             _title('Strumenti', 'La tua borsa e, nei settori cittadini, l’emporio.'),
@@ -284,7 +303,7 @@ class _ExploreSheetState extends State<_ExploreSheet> {
   Widget build(BuildContext context) => _TableLive(
         party: widget.party,
         me: widget.me,
-        builder: (context, st, events, user) {
+        builder: (context, st, events, user, mob) {
           final pending = user['wildEncounter'] != null || user['spotted'] != null;
           String? block(String kind) =>
               pending ? 'Prima risolvi quello che ti è successo' : tableBlock(st, user, widget.me, kind);

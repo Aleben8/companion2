@@ -66,4 +66,25 @@ void main() {
     pk['abilityActiveUntil'] = 6;
     expect(abilityBlock(pk, Ab.svanire, 7), 'Hai già usato un’abilità in questo giro');
   });
+
+  test('Mobility: Fiammata, Gelata, Barricata, Sismo, Passo sicuro e immunità', () {
+    final fx = [
+      {'kind': Ab.fiammata, 'zone': 'vulcano', 'sector': null, 'owner': 'B'},
+      {'kind': Ab.gelata, 'zone': 'hub', 'sector': 2, 'owner': 'B'},
+      {'kind': Ab.barricata, 'zone': 'hub', 'sector': 3, 'owner': 'B'},
+      {'kind': Ab.sismo, 'zone': 'canyon', 'sector': 1, 'owner': 'B'},
+    ];
+    final a = Mobility(uid: 'A', effects: fx);
+    expect(a.abilityExtra('hub', 'vulcano', 1), 1); // entra nella zona rovente
+    expect(a.abilityExtra('vulcano', 'vulcano', 2), 0); // già dentro
+    expect(Mobility(uid: 'A', itemShield: 'vulcano', effects: fx).abilityExtra('hub', 'vulcano', 1), 0); // Tuta ignifuga
+    expect(a.abilityExtra('hub', 'hub', 2), 1); // Gelata
+    expect(Mobility(uid: 'B', effects: fx).abilityExtra('hub', 'hub', 2), 0); // il proprietario no
+    expect(a.abilityBlocked('hub'), {3});
+    expect(a.abilityBlocked('canyon'), {1});
+    expect(Mobility(uid: 'A', passives: {Ab.corazza}, effects: fx).abilityBlocked('canyon'), isEmpty);
+    expect(Mobility(passives: {Ab.nuotatore}).shielded('isola'), isTrue);
+    expect(Mobility(passives: {Ab.passoSicuro}).sureFooted, isTrue);
+    expect(bagLimitFor({Ab.lega}, 12), 14);
+  });
 }

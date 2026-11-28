@@ -1,6 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 
+import '../abilities.dart';
 import '../services/clue_service.dart';
 import '../services/party_service.dart';
 import '../services/shared_stream.dart';
@@ -23,7 +24,7 @@ class HereSectors extends StatefulWidget {
   final Map<String, dynamic> state;
   final List<Map<String, dynamic>> events; // tutti (con 'id')
   final Map pos;
-  final String? shield;
+  final Mobility mob; // protezioni, passive ed effetti delle abilità
   final bool myTurn; // puoi spostarti tra i settori adesso
   final String? blockReason; // se no, perché
   final int actionsLeft;
@@ -38,7 +39,7 @@ class HereSectors extends StatefulWidget {
     required this.state,
     required this.events,
     required this.pos,
-    required this.shield,
+    required this.mob,
     required this.myTurn,
     this.blockReason,
     required this.actionsLeft,
@@ -112,7 +113,7 @@ class _HereSectorsState extends State<HereSectors> {
   }) {
     final z = zoneSpec(_zone);
     final round = _i(widget.state['round']);
-    final blocked = TableService.blockedSectors(_active, _zone, shield: widget.shield);
+    final blocked = TableService.blockedSectors(_active, _zone, mob: widget.mob);
     bool at(Map m, int s) => m['zone'] == _zone && _i(m['sector']) == s;
     bool atPlace(Map c, int s) {
       final p = c['place'];
@@ -122,6 +123,9 @@ class _HereSectorsState extends State<HereSectors> {
     String blockerName(int s) => [
           for (final e in _active)
             if (e['zone'] == _zone && (e['blocked'] as List? ?? []).map(_i).contains(s)) '${e['name']}',
+          for (final e in widget.mob.effects)
+            if ((e['kind'] == Ab.barricata || e['kind'] == Ab.sismo) && e['zone'] == _zone && _i(e['sector']) == s)
+              '${abilityDef('${e['kind']}')!.name} di ${e['owner']}',
         ].join(', ');
 
     List<String> notes(int s) {
@@ -151,10 +155,15 @@ class _HereSectorsState extends State<HereSectors> {
       if (mineClues.isNotEmpty) out.add('🧩 Hai nascosto qui: ${mineClues.join(', ')}');
       if (traps.any((t) => at(t, s))) out.add('🪤 La tua Trappola è qui');
       if (alarms.any((a) => at(a, s))) out.add('🚨 Il tuo Allarme è qui');
+      // le tue abilità sulla mappa (quelle degli altri restano segrete, salvo i costi e i blocchi)
+      for (final e in widget.mob.effects) {
+        if (e['owner'] != widget.me || e['zone'] != _zone || (e['sector'] != null && _i(e['sector']) != s)) continue;
+        out.add('✨ La tua ${abilityDef('${e['kind']}')?.name ?? e['kind']} è qui · ${untilLabel(_i(e['untilRound']), round)}');
+      }
       return out;
     }
 
-    int cost(int s) => TableService.moveCost(_active, _zone, _zone, shield: widget.shield, sector: s);
+    int cost(int s) => TableService.moveCost(_active, _zone, _zone, mob: widget.mob, sector: s);
     String? reason(int s) {
       if (s == _here) return null;
       if (blocked.contains(s)) return 'bloccato';

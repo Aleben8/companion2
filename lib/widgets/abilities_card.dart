@@ -348,3 +348,100 @@ class _AbilitiesCardState extends State<AbilitiesCard> {
 class _Cancel implements Exception {
   const _Cancel();
 }
+
+/// Cose da fare subito per le abilità: l'Imboscata è scattata (bottone Sfida, non costa azioni) oppure
+/// qualcuno ti ha sfidato con Sfida/Imboscata (la lotta è già iniziata: non puoi rifiutare).
+class AbilityAlerts extends StatefulWidget {
+  final ValueChanged<String> onBattle;
+  const AbilityAlerts({super.key, required this.onBattle});
+  @override
+  State<AbilityAlerts> createState() => _AbilityAlertsState();
+}
+
+class _AbilityAlertsState extends State<AbilityAlerts> {
+  bool _busy = false;
+
+  Future<void> _run(Future<void> Function() f) async {
+    setState(() => _busy = true);
+    try {
+      await f();
+    } catch (e) {
+      if (mounted) snack(context, _err(e), error: true);
+    }
+    if (mounted) setState(() => _busy = false);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final uid = context.read<Session>().userName!;
+    return StreamBuilder<Map<String, dynamic>>(
+      stream: ItemService.watchUserFields(uid, const ['ambush', 'forcedBattle', 'actualParty']),
+      builder: (context, snap) {
+        final u = snap.data;
+        final ambush = u?['ambush'] as Map?;
+        final forced = u?['forcedBattle'] as Map?;
+        final party = u?['actualParty'] as String?;
+        return Column(children: [
+          if (forced != null)
+            DropCard(
+              colors: typeColors('Lotta'),
+              label: 'Sei stato sfidato!',
+              labelOnTop: true,
+              child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+                Text('${forced['by']} ti ha sfidato: la lotta è già iniziata e non puoi rifiutare.'),
+                const SizedBox(height: 8),
+                DropButton(
+                  label: 'Vai alla lotta',
+                  icon: Icons.sports_mma,
+                  colors: typeColors('Lotta'),
+                  height: 44,
+                  busy: _busy,
+                  onTap: () => _run(() async {
+                    await AbilityService.dismissForcedBattle(uid);
+                    widget.onBattle('${forced['id']}');
+                  }),
+                ),
+              ]),
+            ),
+          if (ambush != null && party != null)
+            DropCard(
+              colors: typeColors('Buio'),
+              label: 'Imboscata',
+              labelOnTop: true,
+              child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+                Text('${ambush['target']} è arrivato nel tuo settore '
+                    '(${zoneSpec('${ambush['zone']}').name}). Puoi sfidarlo subito con +$kAmbushDice al dado nel primo turno: '
+                    'non può rifiutare e non costa azioni.'),
+                const SizedBox(height: 8),
+                Row(children: [
+                  Expanded(
+                    child: DropButton(
+                      label: 'Sfida',
+                      icon: Icons.sports_mma,
+                      colors: typeColors('Buio'),
+                      height: 44,
+                      busy: _busy,
+                      onTap: () => _run(() async {
+                        final id = await AbilityService.ambushChallenge(party, uid);
+                        widget.onBattle(id);
+                      }),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: DropButton(
+                      label: 'Lascia stare',
+                      colors: Pal.neutral,
+                      height: 44,
+                      busy: _busy,
+                      onTap: () => _run(() => AbilityService.dismissAmbush(uid)),
+                    ),
+                  ),
+                ]),
+              ]),
+            ),
+        ]);
+      },
+    );
+  }
+}

@@ -4,8 +4,10 @@ import 'package:geolocator/geolocator.dart';
 import 'package:provider/provider.dart';
 
 import '../geo.dart';
+import '../abilities.dart';
 import '../mode.dart';
 import '../items.dart';
+import '../services/ability_service.dart';
 import '../services/battle_service.dart';
 import '../services/item_service.dart';
 import '../services/location_service.dart';
@@ -391,9 +393,13 @@ class _InventoryTabState extends State<InventoryTab> {
 
   @override
   Widget build(BuildContext context) {
-    return StreamBuilder<Map<String, dynamic>>(
+    return StreamBuilder<Map<String, dynamic>?>(
+      // Lega: la borsa ha 2 posti in più
+      stream: AbilityService.watchPokemon(_uid, context.read<Session>().pokemonId!),
+      builder: (context, pkSnap) => StreamBuilder<Map<String, dynamic>>(
       stream: ItemService.watchUserFields(_uid, const ['inventory', 'coins']),
       builder: (context, snap) {
+        final limit = bagLimitFor(passivesOf(pkSnap.data), kBagLimit);
         if (!snap.hasData && snap.connectionState == ConnectionState.waiting) {
           return const Padding(padding: EdgeInsets.all(40), child: Center(child: CircularProgressIndicator()));
         }
@@ -404,7 +410,7 @@ class _InventoryTabState extends State<InventoryTab> {
         return Column(children: [
           const SectionTitle('Borsa'),
           Row(children: [
-            InfoChip('🎒 $count/$kBagLimit', color: count >= kBagLimit ? Pal.bad : Pal.accent),
+            InfoChip('🎒 $count/$limit', color: count >= limit ? Pal.bad : Pal.accent),
             const SizedBox(width: 8),
             InfoChip('🪙 $coins', color: const Color(0xFFD08A00)),
           ]),
@@ -453,6 +459,7 @@ class _InventoryTabState extends State<InventoryTab> {
             ],
         ]);
       },
+      ),
     );
   }
 }

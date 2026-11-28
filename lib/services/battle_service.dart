@@ -3,6 +3,7 @@ import 'dart:math';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/foundation.dart';
 
+import '../abilities.dart';
 import '../constants.dart';
 import '../items.dart';
 import '../table/sectors.dart';
@@ -89,6 +90,9 @@ class BattleService {
     if (s is! Map || (hp != null && hp <= 0)) return null;
     return Map<String, dynamic>.from(s);
   }
+
+  /// Avvelenamento fuori dalla lotta (Esca tossica): Danno nel tempo che parte alla prossima lotta.
+  static Map<String, dynamic> poisonStatus() => {'type': 'dot', 'damage_per_turn': 2, 'remaining_turns': 2};
 
   /// Nome leggibile di uno status alterato.
   static String statusLabel(Map? s) => switch (s?['type']) {
@@ -233,6 +237,7 @@ class BattleService {
   static Future<String> createBattle(String uid, String pk) async {
     await ItemService.assertCanFight(uid);
     await TableService.assertNotInRefuge(uid); // nei rifugi non si combatte tra giocatori
+    await _assertNotHibernating(uid);
     final moves = await loadMoves(uid, pk);
     final d = await _pokemonData(uid, pk);
     final now = DateTime.now();
@@ -244,6 +249,43 @@ class BattleService {
       'playerA': _combatant(uid, pk, d, moves),
       'playerB': null,
       'last_turn_log': 'In attesa del secondo giocatore...',
+      ...await _zoneFields(uid),
+    });
+    return id;
+  }
+
+  /// Ibernazione: per 1 giro nessuno può sfidarti e tu non puoi sfidare (lotte tra giocatori).
+  static Future<void> _assertNotHibernating(String uid, {bool me = true}) async {
+    final party = await PartyService.actualParty(uid);
+    if (party == null) return;
+    if (await AbilityService.hasPersonal(party, Ab.ibernazione, uid)) {
+      throw Exception(me ? 'Sei in Ibernazione: per questo giro non puoi sfidare' : '$uid è in Ibernazione: non può essere sfidato');
+    }
+  }
+
+  /// Lotta obbligata (Sfida, Imboscata): parte subito tra [uid] e [target], che non può rifiutare.
+  /// [firstTurnDice]: bonus al dado di [uid] nel primo turno (Imboscata).
+  static Future<String> createForcedBattle({
+    required String party,
+    required String uid,
+    required String target,
+    int firstTurnDice = 0,
+  }) async {
+    final pkA = await TableService.activePokemon(uid);
+    final pkB = await TableService.activePokemon(target);
+    if (pkA == null || pkB == null) throw Exception('Pokémon non trovato');
+    final a = _combatant(uid, pkA, await _pokemonData(uid, pkA), await loadMoves(uid, pkA));
+    if (firstTurnDice > 0) a['firstTurnDice'] = firstTurnDice;
+    final b = _combatant(target, pkB, await _pokemonData(target, pkB), await loadMoves(target, pkB));
+    final id = '$uid-sfida-${_randomCode(3)}';
+    await battleRef(id).set({
+      'status': 'in_progress',
+      'turn_number': 0,
+      'forced': true,
+      'party': party,
+      'playerA': a,
+      'playerB': b,
+      'last_turn_log': '$uid sfida $target: la lotta comincia subito! Scegli la tua mossa.',
       ...await _zoneFields(uid),
     });
     return id;
@@ -264,6 +306,8 @@ class BattleService {
     await ItemService.assertCanFight(uid, opponentUid: creator);
     await TableService.assertNotInRefuge(uid);
     if (creator != null) await TableService.assertNotInRefuge(creator, me: false);
+    await _assertNotHibernating(uid);
+    if (creator != null) await _assertNotHibernating(creator, me: false);
     await ref.update({
       'status': 'in_progress',
       'playerB': _combatant(uid, pk, d, moves),
@@ -611,15 +655,21 @@ class BattleService {
       if (data['npc'] != true && !result.winnerUid!.startsWith('gym:')) {
         // Vittoria PvP: monete e, a volte, uno strumento.
         final drop = _rnd.nextDouble() < kPvpDropChance ? [ItemService.randomDrop(rnd: _rnd)] : <ItemId>[];
-        final txt = await ItemService.grant(result.winnerUid!, coins: kCoinsPvpWin, items: drop);
+        final txt = await ItemService.grant(result.winnerUid!,
+            coins: kCoinsPvpWin, items: await ItemService.luckyDrops(result.winnerUid!, drop, rnd: _rnd)); // Fortuna
         await ref.update({'rewardText': txt, 'rewardFor': result.winnerUid});
       }
       if (data['npc'] == true) {
         if (data['wild'] == true) {
           // Pokémon selvatico (settore selvaggio): monete e, a volte, uno strumento. Niente badge.
           if (!result.winnerUid!.startsWith('gym:')) {
-            final drop = _rnd.nextDouble() < kWildDropChance ? [ItemService.randomDrop(rnd: _rnd)] : <ItemId>[];
-            final txt = await ItemService.grant(result.winnerUid!, coins: kCoinsWild, items: drop);
+            // Nido: la probabilità di uno strumento sale al 50%
+            final nest = (await AbilityService.passives(result.winnerUid!)).contains(Ab.nido);
+            final drop = _rnd.nextDouble() < (nest ? kNestDropChance : kWildDropChance)
+                ? [ItemService.randomDrop(rnd: _rnd)]
+                : <ItemId>[];
+            final txt = await ItemService.grant(result.winnerUid!,
+                coins: kCoinsWild, items: await ItemService.luckyDrops(result.winnerUid!, drop, rnd: _rnd));
             await ref.update({'rewardText': txt, 'rewardFor': result.winnerUid});
           }
         } else if (data['legendary'] == true) {
@@ -642,7 +692,9 @@ class BattleService {
             // la MT al posto dello strumento a caso (se ne hai già una, strumento a caso come prima)
             final winner = (await ItemService.userRef(result.winnerUid!).get()).data();
             parts.add(await ItemService.grant(result.winnerUid!,
-                coins: kCoinsGymWin, items: [ItemService.gymPrize(winner, rnd: _rnd)]));
+                coins: kCoinsGymWin,
+                // Fortuna vale per lo strumento a caso, mai per la MT
+                items: await ItemService.luckyDrops(result.winnerUid!, [ItemService.gymPrize(winner, rnd: _rnd)], rnd: _rnd)));
           }
           // badge della partita in corso: sblocca un'abilità del Pokémon (la prima volta in questa partita)
           if (await GymService.awardGameBadge(result.winnerUid!, data['gymId'] as String)) {
@@ -732,7 +784,7 @@ class BattleService {
         moveType: (move?['MoveType'] ?? '').toString(),
         action: action as String,
         targetRes: _lowerList(def['resistenze']),
-        diceBonus: atk['candy'] == true ? kCandyBonus : 0,
+        diceBonus: (atk['candy'] == true ? kCandyBonus : 0) + (_i(data['turn_number']) == 0 ? _i(atk['firstTurnDice']) : 0),
         rnd: rnd,
       );
       var total = max(0, dmg + roll.bonus + roll.elementalModifier);

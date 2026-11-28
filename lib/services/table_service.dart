@@ -3,6 +3,7 @@ import 'dart:math';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/foundation.dart' show debugPrint;
 
+import '../abilities.dart';
 import '../items.dart';
 import '../mode.dart';
 import '../constants.dart';
@@ -500,8 +501,16 @@ class TableService {
       return r;
     });
     if (round == null) return null;
+    final before = TableClock.round;
     TableClock.round = round;
     await advanceEvents(party, round);
+    // Fotosintesi: +2 PS a ogni nuovo giro (anche dal vivo)
+    final passed = (before > 0 && round > before) ? round - before : 1;
+    for (final p in (await PartyService.players(party).get()).docs) {
+      for (var i = 0; i < passed && i < 4; i++) {
+        await AbilityService.photosynthesis(p.id);
+      }
+    }
     return round;
   }
 
@@ -513,11 +522,18 @@ class TableService {
     if (cur?['zone'] == pos?['zone'] && _i(cur?['sector']) == _i(pos?['sector'])) return;
     final update = <String, dynamic>{'pos': pos ?? FieldValue.delete()};
     final zone = pos?['zone'] as String?;
-    if (party != null && zone != null && cur?['zone'] != zone && ItemService.shieldZone(me) != zone) {
-      final extra = moveCost(await activeEvents(party), cur?['zone'] as String?, zone) - kMoveActionCost;
+    if (party != null && zone != null) {
+      // eventi (bufera, eruzione) entrando nella zona e abilità degli altri (Fiammata, Gelata): un'attesa
+      final mob = await AbilityService.mobility(party, uid, me);
+      final extra = moveCost(await activeEvents(party), cur?['zone'] as String?, zone, mob: mob, sector: _i(pos!['sector'])) -
+          kMoveActionCost;
       if (extra > 0) update.addAll(LiveService.addBusy(me, extra * kLiveEnterWaitMinutes));
     }
     await ref.set(update, SetOptions(merge: true));
+    if (party != null && zone != null) {
+      await AbilityService.onEnter(
+          party: party, uid: uid, fromZone: cur?['zone'] as String?, zone: zone, sector: _i(pos!['sector']));
+    }
   }
 
   /// Come si va da [from] a [to]: stessa zona o collegamento diretto (a piedi, settore di arrivo libero),
@@ -669,6 +685,7 @@ class TableService {
     await advanceEvents(party, round);
     for (final p in (await PartyService.players(party).get()).docs) {
       await _refugeRest(party, p.id);
+      await AbilityService.photosynthesis(p.id);
     }
   }
 
@@ -772,15 +789,19 @@ class TableService {
 
   /// Costo (in azioni) di uno spostamento verso [zone] (e, al tavolo, verso il settore [sector]):
   /// +1 per gli eventi che rendono difficile entrare nella zona e +1 se il settore è impervio.
-  static int moveCost(List<Map<String, dynamic>> events, String? fromZone, String zone, {String? shield, int? sector}) {
+  /// [mob]: protezioni (strumento di bioma e passive), Passo sicuro ed effetti delle abilità (Fiammata, Gelata).
+  static int moveCost(List<Map<String, dynamic>> events, String? fromZone, String zone,
+      {Mobility mob = Mobility.none, int? sector}) {
     var cost = kMoveActionCost;
-    if (fromZone != zone && shield != zone) {
+    if (fromZone != zone && !mob.shielded(zone)) {
       for (final e in events) {
         if (e['zone'] == zone && e['status'] == 'active') cost += eventDef(e['defId'] as String).moveExtra;
       }
     }
-    if (sector != null && TableLayout.typeOf(zone, sector) == SectorType.impervio) cost += kImperviousExtraCost;
-    return cost;
+    if (sector != null && !mob.sureFooted && TableLayout.typeOf(zone, sector) == SectorType.impervio) {
+      cost += kImperviousExtraCost;
+    }
+    return cost + mob.abilityExtra(fromZone, zone, sector);
   }
 
   /// Dove arrivano Biglietto, treno e traghetto: il settore di passaggio della zona.
@@ -804,17 +825,17 @@ class TableService {
     required String to,
     required int actionsLeft,
     required int tickets,
-    String? shield,
+    Mobility mob = Mobility.none,
     String? freeReturn,
   }) {
     final from = pos?['zone'] as String?;
     final fromSector = _i(pos?['sector']);
     final route = routeTo(state, events, from, to);
-    final blocked = blockedSectors(events, to, shield: shield);
+    final blocked = blockedSectors(events, to, mob: mob);
     bool ok(int s) =>
         !blocked.contains(s) &&
         !(from == to && s == fromSector) &&
-        moveCost(events, from, to, shield: shield, sector: s) <= actionsLeft;
+        moveCost(events, from, to, mob: mob, sector: s) <= actionsLeft;
     if (route == MoveRoute.direct) {
       for (var s = 1; s <= TableLayout.count(to); s++) {
         if (ok(s)) return true;
@@ -827,12 +848,14 @@ class TableService {
     return arrival != null && ok(arrival);
   }
 
-  static Set<int> blockedSectors(List<Map<String, dynamic>> events, String zone, {String? shield}) => shield == zone
-      ? <int>{}
-      : {
-        for (final e in events)
-          if (e['zone'] == zone && e['status'] == 'active')
-            for (final b in (e['blocked'] as List? ?? [])) _i(b),
+  /// Settori chiusi: dagli eventi (frana, marea; non per chi ne è protetto) e dalle abilità degli altri
+  /// (Barricata, Sismo).
+  static Set<int> blockedSectors(List<Map<String, dynamic>> events, String zone, {Mobility mob = Mobility.none}) => {
+        if (!mob.shielded(zone))
+          for (final e in events)
+            if (e['zone'] == zone && e['status'] == 'active')
+              for (final b in (e['blocked'] as List? ?? [])) _i(b),
+        ...mob.abilityBlocked(zone),
       };
 
   /// Sposta la pedina. Restituisce un messaggio se succede qualcosa (trappola, incontro selvatico).
@@ -855,7 +878,7 @@ class TableService {
     final me = (await ItemService.userRef(uid).get()).data();
     if (me?['wildEncounter'] is Map) throw Exception('Prima affronta o sfuggi al Pokémon selvatico');
     if (me?['spotted'] is Map) throw Exception('Ti hanno notato: prima elùdili (azione o Fune di fuga)');
-    final shield = ItemService.shieldZone(me);
+    final mob = await AbilityService.mobility(party, uid, me);
     final cur = me?['pos'] as Map?;
     final from = cur?['zone'] as String?;
     final route = routeTo(st, events, from, zone);
@@ -870,11 +893,11 @@ class TableService {
       sector = arrival;
     }
     if (sector < 1 || sector > spec.sectors) throw Exception('Settore non valido');
-    if (blockedSectors(events, zone, shield: shield).contains(sector)) {
+    if (blockedSectors(events, zone, mob: mob).contains(sector)) {
       throw Exception('Il settore $sector di ${spec.name} è bloccato');
     }
     if (cur?['zone'] == zone && _i(cur?['sector']) == sector) throw Exception('Sei già in questo settore');
-    var cost = moveCost(events, from, zone, shield: shield, sector: sector);
+    var cost = moveCost(events, from, zone, mob: mob, sector: sector);
     final discount = _i(me?['moveDiscount']); // Scalare riuscito: il prossimo spostamento costa meno
     if (discount > 0) cost = max(0, cost - discount);
     var needTicket = false;
@@ -896,16 +919,25 @@ class TableService {
     }
     final type = TableLayout.typeOf(zone, sector);
     final msgs = <String>[];
+    // Correnti ascensionali: il primo ingresso in una zona a ogni giro non lascia traccia
+    final updraft = zone != from && mob.passives.contains(Ab.correnti) && _i(me?['updraftRound'], -1) != TableClock.round;
+    if (updraft) {
+      await ItemService.userRef(uid).set({'updraftRound': TableClock.round}, SetOptions(merge: true));
+    }
+    // Rovi: chi entra lascia una traccia evidente (anche con il Passo felpato)
+    final brambles = effectsAt(mob.effects, Ab.rovi, zone, sector: sector, notOwner: uid).isNotEmpty;
     if (!ItemService.isActive(me?['stealthUntil'])) {
       // Passo felpato: niente tracce, trappole, allarmi e nessuno ti nota
-      await ItemService.addTrace(party, uid, {
-        'kind': 'move',
-        'fromZone': cur?['zone'],
-        'fromSector': cur?['sector'],
-        'zone': zone,
-        'sector': sector,
-        'strength': traceStrength(type, visible: visibleTrace),
-      });
+      if (!updraft || brambles) {
+        await ItemService.addTrace(party, uid, {
+          'kind': 'move',
+          'fromZone': cur?['zone'],
+          'fromSector': cur?['sector'],
+          'zone': zone,
+          'sector': sector,
+          'strength': brambles ? kBrambleTrace : traceStrength(type, visible: visibleTrace),
+        }, force: brambles);
+      }
       await _checkAlarms(party, uid, zone, sector);
       if (await _checkSpotted(party, uid, zone, sector)) {
         msgs.add('Qualcuno nel settore ti ha notato! Per eluderlo usa $kEludeCost azione oppure una Fune di fuga.');
@@ -916,7 +948,18 @@ class TableService {
             : 'Sei finito in una Trappola! Resti fermo finché gli altri non fanno $kTrapWaitActions azioni, '
                 'a meno di usare una Fune di fuga.');
       }
+    } else if (brambles) {
+      await ItemService.addTrace(party, uid, {
+        'kind': 'move',
+        'fromZone': cur?['zone'],
+        'fromSector': cur?['sector'],
+        'zone': zone,
+        'sector': sector,
+        'strength': kBrambleTrace,
+      }, force: true);
     }
+    // abilità degli altri in questo settore/zona: Rovi, Esca tossica, Gelata, Imboscata, Vedetta
+    msgs.addAll(await AbilityService.onEnter(party: party, uid: uid, fromZone: from, zone: zone, sector: sector));
     if (msgs.isEmpty && type == SectorType.selvaggio && _rnd.nextDouble() < kWildEncounterChance) {
       final name = await _startWildEncounter(uid, zone, sector);
       msgs.add('Un $name selvatico ti sbarra la strada! Affrontalo o fuggi (costa $kWildFleeCost azione).');
@@ -1361,6 +1404,11 @@ class TableService {
     final uref = ItemService.userRef(uid);
     final u = (await uref.get()).data();
     if (u?['wildEncounter'] is! Map) throw Exception('Non c’è nessun Pokémon selvatico');
+    if ((await AbilityService.passives(uid, u)).contains(Ab.nido)) {
+      // Nido: dagli incontri selvatici fuggi senza costo
+      await uref.set({'wildEncounter': FieldValue.delete()}, SetOptions(merge: true));
+      return;
+    }
     if (!kTableTurns) {
       await _spend(party, uid, kWildFleeCost, kind: ActKind.forced);
       await uref.set({'wildEncounter': FieldValue.delete()}, SetOptions(merge: true));
@@ -1431,6 +1479,7 @@ class TableService {
   }
 
   static Future<bool> _checkTrap(String party, String uid, String zone, int sector) async {
+    if ((await AbilityService.passives(uid)).contains(Ab.attraversamuri)) return false; // Attraversamuri
     final q = await trapsCol(party)
         .where('active', isEqualTo: true)
         .where('zone', isEqualTo: zone)
@@ -1469,7 +1518,7 @@ class TableService {
     final user = (await ItemService.userRef(uid).get()).data();
     final pos = user?['pos'] as Map?;
     final zone = pos?['zone'];
-    if (zone == null || ItemService.shieldZone(user) == zone) return {};
+    if (zone == null || (await AbilityService.shieldedZones(uid, user)).contains(zone)) return {};
     final out = <String, int>{};
     for (final e in await activeEvents(party)) {
       if (e['zone'] != zone) continue;
@@ -1477,6 +1526,8 @@ class TableService {
         out[t.toLowerCase()] = (out[t.toLowerCase()] ?? 0) + b;
       });
     }
+    // Pioggia: per 1 giro il bonus Fuoco degli eventi della zona è annullato
+    if (effectsAt(await AbilityService.activeEffects(party), Ab.pioggia, '$zone').isNotEmpty) out.remove('fuoco');
     return out;
   }
 
@@ -1534,7 +1585,7 @@ class TableService {
       for (final p in players.docs) {
         final user = (await ItemService.userRef(p.id).get()).data();
         final pos = user?['pos'] as Map?;
-        if (pos?['zone'] == zone && ItemService.shieldZone(user) != zone) {
+        if (pos?['zone'] == zone && !(await AbilityService.shieldedZones(p.id, user)).contains(zone)) {
           await ItemService.userRef(p.id).set(
               kTableMode
                   ? (kTableTurns
@@ -1553,6 +1604,8 @@ class TableService {
   static Future<String> claimEventItem(String party, String eventId, String uid) async {
     final ref = eventsCol(party).doc(eventId);
     final uref = ItemService.userRef(uid);
+    final limit = await ItemService.bagLimit(uid);
+    final lucky = (await AbilityService.passives(uid)).contains(Ab.fortuna) && _rnd.nextDouble() < kLuckChance;
     late String got;
     await _db.runTransaction<void>((tx) async {
       final e = (await tx.get(ref)).data();
@@ -1567,10 +1620,12 @@ class TableService {
       final pool = def.claimPool ?? ItemService.dropKeys();
       final id = pool[_rnd.nextInt(pool.length)];
       final inv = ItemService.readInventory(u);
-      if (!ItemService.addItem(inv, id)) throw Exception('Borsa piena ($kBagLimit oggetti): fai posto e riprova');
+      if (!ItemService.addItem(inv, id, 1, limit)) throw Exception('Borsa piena ($limit oggetti): fai posto e riprova');
+      // Fortuna: 25% di prenderne due
+      final twice = lucky && ItemService.addItem(inv, id, 1, limit);
       tx.update(ref, {'claimedBy': [...claimed, uid]});
       tx.set(uref, {'inventory': inv}, SetOptions(merge: true));
-      got = itemDef(ItemId.values.firstWhere((i) => i.name == id)).name;
+      got = '${itemDef(ItemId.values.firstWhere((i) => i.name == id)).name}${twice ? ' (×2, Fortuna)' : ''}';
     });
     return got;
   }
@@ -1604,6 +1659,9 @@ class TableService {
   static Future<String?> rewardLegendary(String party, String eventId, String uid) async {
     final ref = eventsCol(party).doc(eventId);
     final uref = ItemService.userRef(uid);
+    final limit = await ItemService.bagLimit(uid);
+    final drops = await ItemService.luckyDrops(uid, [ItemService.randomDrop(rnd: _rnd), ItemService.randomDrop(rnd: _rnd)],
+        rnd: _rnd); // Fortuna
     String? text;
     await _db.runTransaction<void>((tx) async {
       final e = (await tx.get(ref)).data();
@@ -1611,9 +1669,8 @@ class TableService {
       if (e == null || e['defeatedBy'] != null) return;
       final inv = ItemService.readInventory(u);
       final names = <String>[];
-      for (var i = 0; i < 2; i++) {
-        final id = ItemService.randomDrop(rnd: _rnd);
-        names.add(ItemService.addItem(inv, id.name) ? itemDef(id).name : '${itemDef(id).name} (borsa piena: perso)');
+      for (final id in drops) {
+        names.add(ItemService.addItem(inv, id.name, 1, limit) ? itemDef(id).name : '${itemDef(id).name} (borsa piena: perso)');
       }
       tx.update(ref, {'defeatedBy': uid, 'status': 'ended'});
       tx.set(uref, {'inventory': inv, 'coins': ItemService.coinsOf(u) + kCoinsLegendary}, SetOptions(merge: true));

@@ -354,3 +354,77 @@ String? abilityBlock(Map<String, dynamic>? pokemon, String key, int round) {
   if (m is Map && m.values.any((v) => _n(v, -99) == round)) return 'Hai già usato un’abilità in questo giro';
   return null;
 }
+
+// ---- effetti fuori dalla lotta ---------------------------------------------------
+
+const int kGatherCoins = 3; // Racimolare
+const int kHydrateHp = 5; // Idratazione
+const int kSynthesisHp = 10, kSynthesisEnergy = 3; // Sintesi
+const int kPhotosynthesisHp = 2; // Fotosintesi: PS a ogni nuovo giro
+const int kBrambleDamage = 2, kBrambleTrace = 3; // Rovi
+const double kDigChance = 0.5; // Scavo
+const int kHibernateHp = 5; // Ibernazione
+const int kBlessingHp = 10; // Benedizione
+const int kLeagueBagBonus = 2; // Lega: borsa da 14
+const double kLuckChance = 0.25; // Fortuna
+const double kNestDropChance = 0.5; // Nido: strumento dopo un selvatico
+const int kAmbushDice = 2; // Imboscata: +2 al dado nel primo turno
+
+/// Passive che rendono immuni agli effetti dell'evento di una zona (come la protezione di bioma, ma per sempre).
+const Map<String, String> kPassiveImmuneZone = {
+  Ab.sangueCaldo: 'vulcano',
+  Ab.nuotatore: 'isola',
+  Ab.pelleSpessa: 'neve',
+  Ab.statico: 'colline',
+  Ab.correnti: 'colline',
+  Ab.corazza: 'canyon',
+  Ab.fotosintesi: 'giungla', // la nebbia non acceca il tuo Radar
+};
+
+Set<String> immuneZones(Set<String> passives) => {for (final p in passives) if (kPassiveImmuneZone[p] != null) kPassiveImmuneZone[p]!};
+
+/// Effetti di [kind] in corso nella zona/settore (zona intera se l'effetto non ha settore), lasciati da altri.
+Iterable<Map<String, dynamic>> effectsAt(List<Map<String, dynamic>> effects, String kind, String zone,
+        {int? sector, String? notOwner}) =>
+    effects.where((e) =>
+        e['kind'] == kind &&
+        e['zone'] == zone &&
+        (sector == null || e['sector'] == null || _n(e['sector']) == sector) &&
+        (notOwner == null || e['owner'] != notOwner));
+
+/// Chi si sposta e cosa lo riguarda: protezioni (strumento di bioma e passive), Passo sicuro, Corazza e gli
+/// effetti delle abilità in corso sulla mappa. Si passa a `TableService.moveCost`, `blockedSectors`, `canReach`.
+class Mobility {
+  final String? uid;
+  final String? itemShield; // protezione di bioma attiva (strumento)
+  final Set<String> passives;
+  final List<Map<String, dynamic>> effects; // Party/{codice}/sectorEffects in corso
+  const Mobility({this.uid, this.itemShield, this.passives = const {}, this.effects = const []});
+
+  static const none = Mobility();
+
+  /// Zone i cui eventi non ti toccano (protezione di bioma + passive).
+  Set<String> get shields => {if (itemShield != null) itemShield!, ...immuneZones(passives)};
+  bool shielded(String zone) => shields.contains(zone);
+  bool get sureFooted => passives.contains(Ab.passoSicuro);
+
+  /// Azioni in più per entrare: Fiammata (tutta la zona, entrando da fuori; non con la Tuta ignifuga) e Gelata (settore).
+  int abilityExtra(String? fromZone, String zone, int? sector) {
+    var extra = 0;
+    if (fromZone != zone && itemShield != 'vulcano' && effectsAt(effects, Ab.fiammata, zone, notOwner: uid).isNotEmpty) extra++;
+    if (sector != null && effectsAt(effects, Ab.gelata, zone, sector: sector, notOwner: uid).isNotEmpty) extra++;
+    return extra;
+  }
+
+  /// Settori chiusi dalle abilità degli altri: Barricata e Sismo (Corazza passa anche il Sismo, come la frana).
+  Set<int> abilityBlocked(String zone) => {
+        for (final e in effectsAt(effects, Ab.barricata, zone, notOwner: uid))
+          if (e['sector'] != null) _n(e['sector']),
+        if (!passives.contains(Ab.corazza))
+          for (final e in effectsAt(effects, Ab.sismo, zone, notOwner: uid))
+            if (e['sector'] != null) _n(e['sector']),
+      };
+}
+
+/// Limite della borsa con la passiva Lega.
+int bagLimitFor(Set<String> passives, int base) => passives.contains(Ab.lega) ? base + kLeagueBagBonus : base;

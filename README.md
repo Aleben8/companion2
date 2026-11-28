@@ -286,6 +286,26 @@ stesso contatore (`state.round`) degli eventi di zona. Definizioni e regole in `
   active}` (Gelata, Esca tossica, Rovi, Barricata, Sismo e gli altri effetti che gli altri devono "vedere"); si leggono negli
   stessi punti di trappole, allarmi e settori bloccati e si cancellano a ogni nuova partita.
 
+### Abilità fuori dalla lotta (dove agiscono)
+
+Gli effetti sono raggruppati per punto del codice. Chi usa l'abilità ne è sempre escluso; tutte rispettano rifugi e Repellente.
+Al tavolo "+1 azione" si paga nello spostamento, dal vivo diventa `kLiveEnterWaitMinutes` minuti di attesa (`updateLivePos`).
+
+| Dove | Abilità |
+|---|---|
+| **Spostamenti e ingressi** (`moveCost`, `blockedSectors`, `canReach`, `moveTo`, `updateLivePos`; regole in `Mobility`, `lib/abilities.dart`; cosa succede entrando in `AbilityService.onEnter`) | **Fiammata** (zona rovente: +1 azione entrando, non con la Tuta ignifuga), **Gelata** (+1 azione nel settore e avviso segreto al proprietario), **Barricata** e **Sismo** (settore bloccato per 1 giro; dal vivo lì non si cerca), **Rovi** (−2 PS, minimo 1, e traccia evidente), **Esca tossica** (il primo che entra è avvelenato: `currentStatus`), **Passo sicuro** (niente costo extra degli impervi), **Nuotatore** (settori sommersi), **Corazza** (frana e Sismo). Le passive **Sangue caldo** (Vulcano), **Nuotatore** (Isola), **Pelle spessa** (Neve), **Statico** e **Correnti ascensionali** (Colline), **Corazza** (Canyon) e **Fotosintesi** (nebbia della Giungla) valgono come una protezione di bioma permanente (`kPassiveImmuneZone`): costo di ingresso, settori bloccati, azioni perse, bonus di tipo, nebbia per il tuo Radar. |
+| **Radar, Calmanella, Lente, Sensore** (`ItemService.radarScan`, `useBell`, `useLens`, `useSensor`, `weatherRows`) | **Impulso** (Radar sulla tua zona, senza strumento), **Svanire** (invisibile al Radar), **Depistaggio** (chi ti trova vede una zona a caso; dal vivo un punto falso a 100–400 m), **Sciame** (nella zona nessun altro usa Radar, Lente, Sensore, Impulso, Fiuto), **Ombra** (gli altri vedono solo la tua zona), **Mente lucida** (avviso segreto quando un Radar ti vede), **Fiuto** (Lente sul tuo settore, senza strumento), **Preveggenza** (Radar meteo senza strumento), **Ricognizione** (eventi e numero di giocatori per zona, senza nomi), **Vedetta** (avviso con il nome quando qualcuno entra nella tua zona). |
+| **Tracce** (`ItemService.addTrace`, `moveTo`) | **Pioggia** (tracce della zona a forza 1 e per 1 giro niente bonus Fuoco degli eventi; dal vivo le tracce di ricerca ora hanno anche la zona), **Svanire** (nessuna traccia), **Correnti ascensionali** (il primo ingresso in una zona a ogni giro non lascia traccia: `Users/{uid}.updraftRound`), **Rovi** (traccia di forza 3, anche con il Passo felpato). |
+| **Ricerca, strumenti, emporio, monete** | **Racimolare** (+3 monete), **Scavo** (50% di uno strumento, non è un "Cerca"), **Distrazione** (per 1 giro nel tuo settore gli altri non cercano indizi), **Forgia** (una ricetta con 1 solo ingrediente; per Pozione + Elisir scegli quale dare), **Fortuna** (25% di un secondo strumento uguale: Cerca, Scavo, indizio dichiarato, PvP, selvatici, eventi, leggendario, palestre; mai la MT; `ItemService.luckyDrops`), **Cliente abituale** (−1 moneta a ogni acquisto, si somma a Contrattare, minimo 1: `priceFor`), **Lega** (borsa da 14: `ItemService.bagLimit`), **Borseggio** (uno strumento a caso, MT esclusa, da un giocatore a caso nel tuo settore), **Benedizione** (+10 PS e niente status a te e a chi è nel tuo settore), **Idratazione**, **Sintesi**, **Fotosintesi** (+2 PS a ogni nuovo giro, tavolo e dal vivo). |
+| **Trappole e Allarmi** | **Attraversamuri** (non scattano su di te, tavolo e dal vivo), **Sonda** (disattiva nel tuo settore Trappole, Allarmi, Gelata ed Esca tossica degli altri e dice di chi erano; dal vivo usa il settore GPS di ogni trappola). |
+| **Sfide tra giocatori** | **Sfida** (lotta obbligata con un giocatore del tuo settore: `BattleService.createForcedBattle`, al bersaglio arriva la scheda "Sei stato sfidato!"), **Imboscata** (chi entra nel tuo settore fa comparire la scheda **Imboscata** con il bottone *Sfida*: non costa azioni, +2 al dado nel primo turno; `Users/{uid}.ambush`), **Ibernazione** (per 1 giro nessuna lotta tra giocatori per te, +5 PS), **Spavento** (il bersaglio perde 1 azione; dal vivo 2 minuti). |
+| **Selvatici** | **Nido** (fuga gratis, 50% di strumento vincendo). |
+
+Gli avvisi segreti (Gelata, Vedetta, Mente lucida, Imboscata, Borseggio, Spavento, Benedizione, Sfida) sono eventi
+`Party/{codice}/events` con `type: 'notice'` e `to: [uid]`: compaiono a comparsa solo a chi sono destinati (`GameWatcher`).
+Le schermate di movimento (pannello Movimento, mappa) usano la stessa `Mobility` dei servizi, così costi e settori bloccati
+mostrati sono quelli veri; nei tuoi settori compare anche "✨ La tua Gelata è qui".
+
 ## Indizi sulla mappa (live e tavolo)
 
 Tab **Party**, scheda "Indizi sulla mappa" (piazzamento, indizi trovati e dichiarati). La **ricerca** sta nella sezione dei movimenti:

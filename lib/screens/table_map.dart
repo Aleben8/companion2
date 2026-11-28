@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../abilities.dart';
 import '../services/table_service.dart';
 import '../table/events.dart';
 import '../table/phases.dart';
@@ -18,7 +19,7 @@ class TableMap extends StatefulWidget {
   final Map<String, dynamic> state;
   final List<Map<String, dynamic>> events; // tutti gli eventi (con 'id')
   final Map? pos;
-  final String? shield;
+  final Mobility mob; // protezioni, passive ed effetti delle abilità
   final bool myTurn; // puoi cambiare zona adesso
   final String? blockReason; // se no, perché
   final int actionsLeft;
@@ -33,7 +34,7 @@ class TableMap extends StatefulWidget {
     required this.state,
     required this.events,
     required this.pos,
-    required this.shield,
+    required this.mob,
     required this.myTurn,
     this.blockReason,
     required this.actionsLeft,
@@ -69,7 +70,7 @@ class _TableMapState extends State<TableMap> {
         to: to,
         actionsLeft: widget.actionsLeft,
         tickets: widget.ticketCount,
-        shield: widget.shield,
+        mob: widget.mob,
         freeReturn: widget.freeReturn,
       );
 
@@ -124,12 +125,12 @@ class _TableMapState extends State<TableMap> {
       tag = 'Tu';
     } else if (_from != null) {
       tag = switch (route) {
-        MoveRoute.direct => '${TableService.moveCost(_active, _from, z.id, shield: widget.shield)} az.',
+        MoveRoute.direct => '${TableService.moveCost(_active, _from, z.id, mob: widget.mob)} az.',
         MoveRoute.passage => 'Treno/traghetto',
         MoveRoute.ticket => widget.freeReturn == z.id ? 'Ritorno gratis' : 'Biglietto',
       };
     }
-    final blocked = TableService.blockedSectors(_active, z.id, shield: widget.shield);
+    final blocked = TableService.blockedSectors(_active, z.id, mob: widget.mob);
     final legendarySectors = {
       for (final e in _active)
         if (e['zone'] == z.id && e['legendary'] == true && e['sector'] != null) _i(e['sector']),
@@ -224,7 +225,7 @@ class _TableMapState extends State<TableMap> {
     final freeReturn = route == MoveRoute.ticket && widget.freeReturn == z.id;
     final useTicket = travel && route == MoveRoute.ticket && !freeReturn;
     final arrival = TableService.arrivalSector(z.id);
-    final blocked = TableService.blockedSectors(_active, z.id, shield: widget.shield);
+    final blocked = TableService.blockedSectors(_active, z.id, mob: widget.mob);
     final legendarySector = {
       for (final e in _active)
         if (e['zone'] == z.id && e['legendary'] == true && e['sector'] != null) _i(e['sector']),
@@ -233,7 +234,7 @@ class _TableMapState extends State<TableMap> {
     final sector = travel ? arrival : _sector;
     final type = sector == null ? null : TableLayout.typeOf(z.id, sector);
     final colors = typeColors(z.type);
-    int cost(int s) => TableService.moveCost(_active, _from, z.id, shield: widget.shield, sector: s);
+    int cost(int s) => TableService.moveCost(_active, _from, z.id, mob: widget.mob, sector: s);
     bool selectable(int s) =>
         !travel && !blocked.contains(s) && !(z.id == _from && s == _fromSector) && cost(s) <= widget.actionsLeft;
 
