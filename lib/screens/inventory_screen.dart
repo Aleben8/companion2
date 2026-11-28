@@ -15,6 +15,7 @@ import '../services/table_service.dart';
 import '../theme.dart';
 import '../widgets/common.dart';
 import '../widgets/drop.dart';
+import 'moves_screen.dart';
 import 'shop_sheet.dart';
 
 /// Borsa: elenco degli strumenti con quantità e pulsante "Usa" (tab della home).
@@ -181,6 +182,14 @@ class _InventoryTabState extends State<InventoryTab> {
           }
           final msg = await BattleService.useOutsideBattle(uid: _uid, pk: pk2, item: item.id);
           if (mounted) snack(context, msg);
+        case ItemId.mt:
+          // sovrascrivi una mossa: la MT (e l'azione) si consumano solo al salvataggio della nuova mossa
+          final partyMt = await _party();
+          await ItemService.assertCanUseTm(_uid, partyMt);
+          if (!mounted) break;
+          final saved = await Navigator.of(context).push<bool>(
+              MaterialPageRoute(builder: (_) => MovesScreen(replaceWithTm: true, party: partyMt)));
+          if (saved == true && mounted) snack(context, 'Nuova mossa salvata: la MT è stata usata');
         case ItemId.biglietto:
         case ItemId.caramella:
         case ItemId.fune:
@@ -226,8 +235,8 @@ class _InventoryTabState extends State<InventoryTab> {
       final players = [for (final d in (await PartyService.players(party).get()).docs) if (d.id != _uid) d.id];
       if (players.isEmpty) throw Exception('Non ci sono altri giocatori nel party');
       if (!mounted) return;
-      final owned = [for (final i in kItems) if ((inv[i.key] ?? 0) > 0) i];
-      if (owned.isEmpty) throw Exception('La borsa è vuota');
+      final owned = [for (final i in kItems) if ((inv[i.key] ?? 0) > 0 && i.tradable) i];
+      if (owned.isEmpty) throw Exception('Non hai strumenti da scambiare');
       String to = players.first;
       ItemId give = owned.first.id;
       ItemId? want;
@@ -261,7 +270,7 @@ class _InventoryTabState extends State<InventoryTab> {
                   items: [
                     const DropdownMenuItem<ItemId?>(value: null, child: Text('Niente (regalo)')),
                     for (final i in kItems)
-                      if (kTableMode || !i.tableOnly) DropdownMenuItem<ItemId?>(value: i.id, child: Text(i.name)),
+                      if ((kTableMode || !i.tableOnly) && i.tradable) DropdownMenuItem<ItemId?>(value: i.id, child: Text(i.name)),
                   ],
                   onChanged: (v) => set(() => want = v),
                 ),

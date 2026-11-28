@@ -3,6 +3,9 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../constants.dart';
+import '../mode.dart';
+import '../services/battle_service.dart';
+import '../services/item_service.dart';
 import '../services/session.dart';
 import '../widgets/common.dart';
 
@@ -11,8 +14,13 @@ import '../widgets/common.dart';
 ///   MoveName, MoveType (tipo), MoveTypo (Fisico|Speciale), Dmg (1-7), Description,
 ///   AltEffect (Rallentamento|Danno|Debuff), targetStat, AltDmg, AltStatusPerc,
 ///   altStatus / altStatusName (letti dal tipo in "Tipi").
+///
+/// Con [replaceWithTm] è la modalità "sostituisci una mossa" della MT: scegli quale delle 2 mosse
+/// sovrascrivere e la ricrei con le stesse regole; la MT si consuma solo al salvataggio.
 class MovesScreen extends StatefulWidget {
-  const MovesScreen({super.key});
+  final bool replaceWithTm;
+  final String? party; // serve alla MT (costo dell'azione al tavolo)
+  const MovesScreen({super.key, this.replaceWithTm = false, this.party});
   @override
   State<MovesScreen> createState() => _MovesScreenState();
 }
@@ -26,6 +34,79 @@ class _MovesScreenState extends State<MovesScreen> {
   final _names = [TextEditingController(), TextEditingController()];
   final _desc = [TextEditingController(), TextEditingController()];
   bool _saving = false;
+  // MT: mosse attuali e quale si sovrascrive
+  List<String>? _current;
+  String? _replace;
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.replaceWithTm) _loadCurrent();
+  }
+
+  Future<void> _loadCurrent() async {
+    final s = context.read<Session>();
+    final moves = await BattleService.loadMoves(s.userName!, s.pokemonId!);
+    if (!mounted) return;
+    setState(() {
+      _current = moves.keys.toList()..sort();
+      _replace = _current!.isEmpty ? null : _current!.first;
+    });
+  }
+
+  /// La mossa [i] come si salva in MoveSet (stesse regole della creazione).
+  Future<Map<String, dynamic>> _build(int i) async {
+    final m = Map<String, dynamic>.from(_moves[i]);
+    m['MoveName'] = _names[i].text.trim();
+    m['Description'] = _desc[i].text.trim();
+    final dmg = (m['Dmg'] as int?) ?? 0;
+    final perc = altStatusChanceForDmg(dmg);
+    m['AltDmg'] = dmg;
+    m['AltStatusPerc'] = perc;
+    // Per "Danno" il bersaglio è sempre la vita; per "Rallentamento" la velocità.
+    if (m['AltEffect'] == 'Danno') m['targetStat'] = 'PkmLife';
+    if (m['AltEffect'] == 'Rallentamento') m['targetStat'] = 'Vel';
+    var altStatus = '';
+    var altStatusName = '';
+    if (perc > 0) {
+      final t = await FirebaseFirestore.instance.collection('Tipi').doc(m['MoveType'] as String).get();
+      if (t.exists) {
+        altStatus = (t.data()?['altStatus'] ?? '').toString();
+        altStatusName = (t.data()?['altStatusName'] ?? '').toString();
+      }
+    }
+    m['altStatus'] = altStatus;
+    m['altStatusName'] = altStatusName;
+    return m;
+  }
+
+  /// MT: salva la nuova mossa al posto di quella scelta (e consuma la MT).
+  Future<void> _saveTm() async {
+    if (!_form.currentState!.validate()) return;
+    if (_replace == null) return snack(context, 'Scegli quale mossa sovrascrivere');
+    if (_moves[0]['MoveType'] == null) return snack(context, 'Seleziona il TIPO ELEMENTALE della nuova mossa');
+    if (_moves[0]['MoveTypo'] == null) return snack(context, 'Seleziona FISICO o SPECIALE per la nuova mossa');
+    final name = _names[0].text.trim();
+    if (name != _replace && (_current ?? const []).contains(name)) {
+      return snack(context, 'Il tuo Pokémon ha già una mossa con questo nome');
+    }
+    setState(() => _saving = true);
+    final s = context.read<Session>();
+    try {
+      await ItemService.replaceMoveWithTm(
+        uid: s.userName!,
+        party: widget.party!,
+        pk: s.pokemonId!,
+        oldMove: _replace!,
+        newMove: await _build(0),
+      );
+      if (mounted) Navigator.of(context).pop(true);
+    } catch (e) {
+      if (mounted) snack(context, '$e'.replaceFirst('Exception: ', ''), error: true);
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
 
   static const _effects = {
     'Rallentamento': 'Riduce la velocità del bersaglio.',
@@ -53,30 +134,9 @@ class _MovesScreenState extends State<MovesScreen> {
     }
     setState(() => _saving = true);
     final s = context.read<Session>();
-    final db = FirebaseFirestore.instance;
     try {
       for (var i = 0; i < 2; i++) {
-        final m = Map<String, dynamic>.from(_moves[i]);
-        m['MoveName'] = _names[i].text.trim();
-        m['Description'] = _desc[i].text.trim();
-        final dmg = (m['Dmg'] as int?) ?? 0;
-        final perc = altStatusChanceForDmg(dmg);
-        m['AltDmg'] = dmg;
-        m['AltStatusPerc'] = perc;
-        // Per "Danno" il bersaglio è sempre la vita; per "Rallentamento" la velocità.
-        if (m['AltEffect'] == 'Danno') m['targetStat'] = 'PkmLife';
-        if (m['AltEffect'] == 'Rallentamento') m['targetStat'] = 'Vel';
-        var altStatus = '';
-        var altStatusName = '';
-        if (perc > 0) {
-          final t = await db.collection('Tipi').doc(m['MoveType'] as String).get();
-          if (t.exists) {
-            altStatus = (t.data()?['altStatus'] ?? '').toString();
-            altStatusName = (t.data()?['altStatusName'] ?? '').toString();
-          }
-        }
-        m['altStatus'] = altStatus;
-        m['altStatusName'] = altStatusName;
+        final m = await _build(i);
         await s.pokemonRef.collection('MoveSet').doc(m['MoveName'] as String).set(m);
       }
       if (!mounted) return;
@@ -98,7 +158,7 @@ class _MovesScreenState extends State<MovesScreen> {
       child: Padding(
         padding: const EdgeInsets.all(16),
         child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-          Text('Mossa ${i + 1}', style: Theme.of(context).textTheme.titleLarge),
+          Text(widget.replaceWithTm ? 'Nuova mossa' : 'Mossa ${i + 1}', style: Theme.of(context).textTheme.titleLarge),
           const SizedBox(height: 12),
           TextFormField(
             controller: _names[i],
@@ -179,8 +239,40 @@ class _MovesScreenState extends State<MovesScreen> {
     );
   }
 
+  /// MT: quale mossa sovrascrivere, poi il modulo di una sola mossa.
+  Widget _tmBody() {
+    if (_current == null) return const Center(child: CircularProgressIndicator());
+    return Form(
+      key: _form,
+      child: ListView(padding: const EdgeInsets.all(16), children: [
+        const Text('Scegli quale mossa sovrascrivere e crea quella nuova, di qualsiasi tipo. '
+            'La MT si consuma solo quando salvi; se torni indietro resta nella borsa.'),
+        const SizedBox(height: 12),
+        if (_current!.isEmpty)
+          const Text('Il tuo Pokémon non ha ancora mosse: configurale da Impostazioni.')
+        else
+          SegmentedButton<String>(
+            segments: [for (final m in _current!) ButtonSegment(value: m, label: Text(m, overflow: TextOverflow.ellipsis))],
+            selected: {if (_replace != null) _replace!},
+            onSelectionChanged: (v) => setState(() => _replace = v.first),
+          ),
+        const SizedBox(height: 16),
+        _moveForm(0),
+        FilledButton(
+          onPressed: _saving || _replace == null ? null : _saveTm,
+          child: _saving
+              ? const SizedBox(height: 18, width: 18, child: CircularProgressIndicator(strokeWidth: 2))
+              : Text(kTableMode ? 'Salva la nuova mossa (1 azione)' : 'Salva la nuova mossa'),
+        ),
+      ]),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
+    if (widget.replaceWithTm) {
+      return Scaffold(appBar: AppBar(title: const Text('MT · sostituisci una mossa')), body: _tmBody());
+    }
     return Scaffold(
       appBar: AppBar(title: const Text('Mosse')),
       body: Form(

@@ -15,6 +15,8 @@ enum ItemId {
   corda, bussola, tutaNeve, tutaIgnifuga, zattera, parafulmine,
   // trasporti
   biglietto,
+  // mosse
+  mt,
 }
 
 enum ItemCategory { esplorazione, battaglia, zona }
@@ -41,6 +43,10 @@ class ItemDef {
   final bool tableOnly; // ha senso solo al tavolo (es. Biglietto: dal vivo non ci sono collegamenti)
   final int rarity; // 3 comune, 2 non comune, 1 raro (peso nei premi casuali)
   final String? zone; // protezione di bioma: zona che protegge
+  final bool buyable; // in vendita all'emporio
+  final bool random; // può uscire nei premi casuali (Cerca, Scavo, PvP, selvatici, eventi, leggendario, Fortuna)
+  final bool tradable; // si può offrire o chiedere con "Scambia"
+  final int? maxInBag; // quante se ne possono avere al massimo in borsa (null = nessun limite)
   const ItemDef(
     this.id,
     this.name,
@@ -55,6 +61,10 @@ class ItemDef {
     this.tableOnly = false,
     this.rarity = 2,
     this.zone,
+    this.buyable = true,
+    this.random = true,
+    this.tradable = true,
+    this.maxInBag,
   });
 
   /// Testi della modalità corrente (il Master può cambiarla a partita in corso).
@@ -443,6 +453,28 @@ const List<ItemDef> kItems = [
     price: 4,
     icon: Icons.flash_on,
     zone: 'colline',
+  ),
+
+  // ---- MT ------------------------------------------------------------------------
+  // Solo come premio della prima vittoria su un capopalestra: niente prezzo, non esce nei premi casuali,
+  // non si scambia, al massimo 1 in borsa. Sprite in assets/images/items/mt.png (icona Material finché manca).
+  ItemDef(
+    ItemId.mt,
+    'MT',
+    'Sovrascrivi una delle 2 mosse del tuo Pokémon e creane una nuova, di qualsiasi tipo, con le stesse regole della '
+        'creazione (danno ed energia). Si consuma solo quando salvi la nuova mossa. Si ottiene solo battendo un '
+        'capopalestra per la prima volta; non si compra e non si scambia (massimo 1 in borsa).',
+    'Si usa dalla borsa, fuori dalla lotta: costa 1 azione.',
+    [Color(0xFF7A5CC9), Color(0xFFB9A3F0)],
+    liveUsage: 'Si usa dalla borsa, fuori dalla lotta: poi aspetti 1 minuto.',
+    category: ItemCategory.battaglia,
+    price: 0,
+    icon: Icons.album,
+    rarity: 1,
+    buyable: false,
+    random: false,
+    tradable: false,
+    maxInBag: 1,
   ),
 ];
 

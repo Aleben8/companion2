@@ -639,8 +639,10 @@ class BattleService {
           );
           final parts = <String>[];
           if (isNew) {
+            // la MT al posto dello strumento a caso (se ne hai già una, strumento a caso come prima)
+            final winner = (await ItemService.userRef(result.winnerUid!).get()).data();
             parts.add(await ItemService.grant(result.winnerUid!,
-                coins: kCoinsGymWin, items: [ItemService.randomDrop(rnd: _rnd)]));
+                coins: kCoinsGymWin, items: [ItemService.gymPrize(winner, rnd: _rnd)]));
           }
           // badge della partita in corso: sblocca un'abilità del Pokémon (la prima volta in questa partita)
           if (await GymService.awardGameBadge(result.winnerUid!, data['gymId'] as String)) {

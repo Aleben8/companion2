@@ -68,7 +68,7 @@ class _ShopBodyState extends State<_ShopBody> {
   }
 
   List<ItemDef> get _generalStock =>
-      [for (final i in kItems) if (i.zone == null && (kTableMode || !i.tableOnly)) i];
+      [for (final i in kItems) if (i.zone == null && i.buyable && (kTableMode || !i.tableOnly)) i];
 
   /// (titolo, assortimento, motivo per cui è chiuso)
   ({String title, List<ItemDef> stock, String? closed}) _shop(Map<String, dynamic>? user, Position? pos) {

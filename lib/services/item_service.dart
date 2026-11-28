@@ -296,6 +296,8 @@ class ItemService {
   /// Aggiunge [n] pezzi alla borsa se c'è posto. Restituisce false se la borsa è piena.
   static bool addItem(Map<String, int> inv, String key, [int n = 1]) {
     if (bagCount(inv) + n > kBagLimit) return false;
+    final max = kItems.where((i) => i.key == key).firstOrNull?.maxInBag;
+    if (max != null && (inv[key] ?? 0) + n > max) return false; // es. MT: al massimo 1
     inv[key] = (inv[key] ?? 0) + n;
     return true;
   }
@@ -304,7 +306,7 @@ class ItemService {
   /// (si comprano) e, dal vivo, quelli solo da tavolo.
   static ItemId randomDrop({Random? rnd}) {
     final r = rnd ?? Random();
-    final pool = kItems.where((i) => i.zone == null && (kTableMode || !i.tableOnly)).toList();
+    final pool = kItems.where((i) => i.zone == null && i.random && (kTableMode || !i.tableOnly)).toList();
     final total = pool.fold<int>(0, (a, i) => a + i.rarity);
     var pick = r.nextInt(total);
     for (final i in pool) {
@@ -316,7 +318,11 @@ class ItemService {
 
   /// Nomi (chiavi) degli strumenti che i premi possono dare.
   static List<String> dropKeys() =>
-      [for (final i in kItems) if (i.zone == null && (kTableMode || !i.tableOnly)) i.key];
+      [for (final i in kItems) if (i.zone == null && i.random && (kTableMode || !i.tableOnly)) i.key];
+
+  /// Premio della prima vittoria su un capopalestra: la MT se non ne hai già una, altrimenti uno strumento a caso.
+  static ItemId gymPrize(Map<String, dynamic>? user, {Random? rnd}) =>
+      (readInventory(user)[ItemId.mt.name] ?? 0) <= 0 ? ItemId.mt : randomDrop(rnd: rnd);
 
   /// Assegna monete e strumenti (transazione). Restituisce il testo del premio.
   static Future<String> grant(String uid, {int coins = 0, List<ItemId> items = const []}) {
@@ -349,6 +355,7 @@ class ItemService {
       final u = (await tx.get(ref)).data() ?? {};
       if (!kTableMode) LiveService.assertNotBusy(u);
       final def = itemDef(id);
+      if (!def.buyable) throw Exception('${def.name} non si compra');
       final coins = coinsOf(u);
       final price = priceFor(def, u);
       if (coins < price) throw Exception('Monete insufficienti (servono $price 🪙)');
@@ -392,6 +399,9 @@ class ItemService {
     ItemId? want,
   }) async {
     if (from == to) throw Exception('Scegli un altro giocatore');
+    if (!itemDef(give).tradable || (want != null && !itemDef(want).tradable)) {
+      throw Exception('${itemDef(!itemDef(give).tradable ? give : want!).name} non si può scambiare');
+    }
     final me = (await userRef(from).get()).data();
     if ((readInventory(me)[give.name] ?? 0) <= 0) throw Exception('Non hai più ${itemDef(give).name}');
     if (kTableMode) {
@@ -424,6 +434,9 @@ class ItemService {
       final fu = (await tx.get(fromRef)).data() ?? {};
       final tu = (await tx.get(toRef)).data() ?? {};
       final give = t['give'] as String, want = t['want'] as String?;
+      if (!itemDef(ItemId.values.byName(give)).tradable || (want != null && !itemDef(ItemId.values.byName(want)).tradable)) {
+        throw Exception('Questo strumento non si può scambiare');
+      }
       final fi = readInventory(fu), ti = readInventory(tu);
       if ((fi[give] ?? 0) <= 0) throw Exception('Chi ha offerto non ha più lo strumento');
       fi[give] = fi[give]! - 1;
@@ -643,6 +656,58 @@ class ItemService {
       return;
     }
     await TableService.grantActions(party, uid);
+  }
+
+  // ====================================================================
+  //  MT: sovrascrive una mossa
+  // ====================================================================
+
+  /// Si può usare la MT adesso? (Si controlla prima di aprire la schermata delle mosse.)
+  /// Al tavolo costa 1 azione (regole di actBlock), dal vivo un'attesa breve.
+  static Future<void> assertCanUseTm(String uid, String party) async {
+    final u = (await userRef(uid).get()).data();
+    if ((readInventory(u)[ItemId.mt.name] ?? 0) <= 0) throw Exception('Non hai una MT');
+    if (u?['wildEncounter'] is Map) throw Exception('Prima affronta o sfuggi al Pokémon selvatico');
+    if (u?['spotted'] is Map) throw Exception('Ti hanno notato: prima elùdili (azione o Fune di fuga)');
+    if (kTableMode) {
+      final st = (await TableService.stateRef(party).get()).data();
+      if (st?['started'] == true && !kTableTurns) {
+        final why = actBlock(state: st, user: u, uid: uid, kind: ActKind.item);
+        if (why != null) throw Exception(why);
+      }
+    } else {
+      LiveService.assertNotBusy(u);
+    }
+  }
+
+  /// MT: paga l'azione (o l'attesa), poi in una sola transazione consuma la MT e sostituisce la mossa
+  /// [oldMove] con [newMove] (documento di MoveSet con chiave = MoveName).
+  static Future<void> replaceMoveWithTm({
+    required String uid,
+    required String party,
+    required String pk,
+    required String oldMove,
+    required Map<String, dynamic> newMove,
+  }) async {
+    await assertCanUseTm(uid, party);
+    final st = (await TableService.stateRef(party).get()).data();
+    if (kTableMode && st?['started'] == true) {
+      await TableService.spendAction(party, uid, kind: ActKind.item);
+    } else if (!kTableMode) {
+      final u = (await userRef(uid).get()).data();
+      await userRef(uid).set(LiveService.addBusy(u, kLiveEnterWaitMinutes), SetOptions(merge: true));
+    }
+    final moves = userRef(uid).collection('Pokemon').doc(pk).collection('MoveSet');
+    final name = '${newMove['MoveName']}';
+    await _db.runTransaction<void>((tx) async {
+      final u = (await tx.get(userRef(uid))).data() ?? {};
+      final inv = readInventory(u);
+      if ((inv[ItemId.mt.name] ?? 0) <= 0) throw Exception('Non hai più la MT');
+      inv[ItemId.mt.name] = inv[ItemId.mt.name]! - 1;
+      tx.set(userRef(uid), {'inventory': inv}, SetOptions(merge: true));
+      if (oldMove != name) tx.delete(moves.doc(oldMove));
+      tx.set(moves.doc(name), newMove);
+    });
   }
 
   /// Chiave: sblocca un settore bloccato nella tua zona.

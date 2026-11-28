@@ -435,6 +435,7 @@ Tutte le durate e i valori sono costanti in `lib/items.dart`.
 | Calmanella | zaino | avvisa tutti i giocatori del party con distanza e direzione |
 | Revitalizzante | zaino | annulla subito il recupero di 5 min dopo una sconfitta |
 | Radar | zaino | elenca gli altri giocatori con distanza, direzione e "aggiornato X fa" (esclusi quelli con Repellente) |
+| MT | borsa, fuori dalla lotta | sovrascrive una delle 2 mosse con una nuova (qualsiasi tipo, stesse regole della creazione); costa 1 azione al tavolo, dal vivo 1 minuto di attesa; si consuma solo al salvataggio. Solo come premio della prima vittoria su un capopalestra, massimo 1 in borsa, non si compra né si scambia |
 
 Nuove regole introdotte per far funzionare gli strumenti:
 - **Ogni giocatore è un "party"** (la squadra della scheda coincide con l'account).
@@ -452,6 +453,7 @@ Tutte le regole numeriche sono in `lib/items.dart` (costanti `k...`).
 | Base | Repellente, Caramella Rara, Fune di fuga, Trappola, Pozione, Calmanella, Revitalizzante, Radar |
 | Esplorazione | **Lente** (tracce: zone già battute e direzioni degli altri), **Sensore** (quanti indizi nascosti qui), **Allarme** (come la Trappola ma avvisa in segreto, non blocca), **Radar meteo** (eventi dei prossimi 2 giri), **Passo felpato** (ignora Trappole/Allarmi, nessuna traccia, invisibile al Radar), **Clessidra** (al tavolo agisci subito una volta, anche di fila; dal vivo azzera le attese), **Chiave** (sblocca un settore chiuso da frana/marea) |
 | Battaglia | **Elisir** (+5 energie), **Super Pozione** (+20 PS), **Antidoto** (toglie DOT e malus), **Amuleto** (blocca il primo status, da dichiarare prima del 1º turno), **Guanto** (+2 danno per uno scontro, da dichiarare prima del 1º turno) |
+| Mosse | **MT** (sovrascrive una mossa; solo premio dei capipalestra, vedi sotto) |
 | Protezioni di bioma | Corda da scalata (Canyon), Bussola (Giungla), Tuta da neve (Regione innevata), Tuta ignifuga (Vulcano), Zattera (Isola), Parafulmine (Colline): per 2 giri annullano gli effetti dell'evento di quella zona (costo extra, settori bloccati, azioni perse, nebbia per il tuo Radar, bonus di tipo) |
 
 Il Radar meteo sostituisce il Telescopio.
@@ -464,8 +466,13 @@ Il Radar meteo sostituisce il Telescopio.
 **Come si ottengono**
 - *Cerca* senza indizi: `kSearchItemChance` (15%) di trovare uno strumento.
 - Dichiarare un indizio non tuo: strumento bonus + monete (`kCoinsDeclare`).
-- Vittoria PvP: `kCoinsPvpWin` monete e `kPvpDropChance` di uno strumento. Primo badge di una palestra: `kCoinsGymWin` monete + 1 strumento. Leggendario: 2 strumenti + `kCoinsLegendary`.
+- Vittoria PvP: `kCoinsPvpWin` monete e `kPvpDropChance` di uno strumento. Primo badge di una palestra (capopalestra di zona o palestra GPS): `kCoinsGymWin` monete + la **MT** (se ne hai già una, uno strumento a caso come prima). Leggendario: 2 strumenti + `kCoinsLegendary`.
 - Eventi Mercato/Raccolto (già presenti).
+- **MT** (`ItemId.mt`, sprite `assets/images/items/mt.png`, icona Material finché manca): `ItemDef` senza prezzo con i flag
+  `buyable: false` (niente emporio), `random: false` (esclusa da Cerca, Scavo, premi PvP, selvatici, eventi, leggendario,
+  crafting e Fortuna), `tradable: false` (niente Scambia) e `maxInBag: 1`. Dalla Borsa apre `moves_screen.dart` in modalità
+  "sostituisci una mossa": scegli quale delle 2 sovrascrivere e la ricrei; la MT (e l'azione) si consumano solo al salvataggio
+  (`ItemService.replaceMoveWithTm`).
 - **Scambi** tra giocatori dalla Borsa ("Scambia"): proposta con o senza richiesta in cambio; al tavolo bisogna essere nella stessa zona.
 - **Crafting** (nell'Emporio, e al tavolo dal bottone Crafting della Borsa): 2 Pozioni → Super Pozione; 2 Caramelle → Guanto; Pozione + Elisir → Revitalizzante (`kRecipes`).
 - Nuove partite al tavolo azzerano monete, protezioni e tracce.
