@@ -52,7 +52,8 @@ Entrambe le modalità usano lo stesso progetto Firebase (`lib/firebase_options.d
   **è la fase**: gli eventi si annunciano per fase ("nel pomeriggio", "fino a stasera", "domani mattina") e al cambio di fase
   avanzano gli eventi e chi è in un rifugio recupera PS. Regole per agire (`lib/table/phases.dart`, `actBlock`):
   1. **mai due volte di fila**: dopo una tua azione deve agire qualcun altro;
-  2. **mai due azioni uguali di fila** (es. "cerca" dopo "cerca", spostamento tra settori dopo spostamento tra settori);
+  2. **mai due azioni uguali di fila** (es. "cerca" dopo "cerca"); gli **spostamenti tra settori della stessa zona sono
+     liberi**: quante volte vuoi, pagando le azioni;
   3. **cambi di zona**: al massimo 2 al giorno e distanziati: se cambi zona la sera, la notte e la mattina dopo no, dal
      pomeriggio sì (`kZoneMovesPerDay`, `kZoneMoveGap`);
   4. chi è **fermo** (Trappola: finché il gruppo non fa altre 2 azioni; eventi che fanno perdere azioni) aspetta.

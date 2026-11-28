@@ -8,7 +8,8 @@
 ///
 /// Regole per agire (vedi [actBlock]):
 ///  1. mai due volte di fila: dopo una tua azione deve agire qualcun altro;
-///  2. mai due azioni uguali di fila (es. "cerca" dopo "cerca");
+///  2. mai due azioni uguali di fila (es. "cerca" dopo "cerca"); gli spostamenti tra settori della
+///     stessa zona sono liberi (si pagano solo le azioni);
 ///  3. cambi di zona: al massimo [kZoneMovesPerDay] al giorno e distanziati di [kZoneMoveGap] fasi
 ///     (se cambi zona la sera, la mattina dopo no: dal pomeriggio sì);
 ///  4. chi è fermo (Trappola, eventi) aspetta che il gruppo faccia altre azioni.
@@ -98,7 +99,10 @@ String? actBlock({
   if (kind == ActKind.forced) return null;
   final free = user?['freeAction'] == true;
   if (!free && state['lastUid'] == uid) return 'Hai appena agito: aspetta che agisca qualcun altro';
-  if (!free && user?['lastKind'] == kind) return 'Non puoi ${ActKind.label(kind)} due volte di fila';
+  // dentro la zona ci si sposta quante volte si vuole (pagando le azioni): la regola vale per il resto
+  if (!free && kind != ActKind.move && user?['lastKind'] == kind) {
+    return 'Non puoi ${ActKind.label(kind)} due volte di fila';
+  }
   if (kind == ActKind.zone) {
     final moves = [for (final m in (user?['zoneMoves'] as List? ?? const [])) _n(m)];
     final today = moves.where((m) => dayOf(m) == dayOf(round)).length;

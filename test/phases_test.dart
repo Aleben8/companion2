@@ -28,6 +28,10 @@ void main() {
     expect(actBlock(state: st(last: 'misty'), user: {}, uid: 'ash', kind: ActKind.search), isNull);
     expect(actBlock(state: st(last: 'misty'), user: {'lastKind': 'search'}, uid: 'ash', kind: ActKind.search), isNotNull);
     expect(actBlock(state: st(last: 'misty'), user: {'lastKind': 'search'}, uid: 'ash', kind: ActKind.move), isNull);
+    // spostarsi tra i settori della stessa zona è libero anche dopo uno spostamento
+    expect(actBlock(state: st(last: 'misty'), user: {'lastKind': 'move'}, uid: 'ash', kind: ActKind.move), isNull);
+    // cambiare zona due volte di fila no
+    expect(actBlock(state: st(last: 'misty'), user: {'lastKind': 'zone'}, uid: 'ash', kind: ActKind.zone), isNotNull);
     // Clessidra: una volta si può
     expect(actBlock(state: st(last: 'ash'), user: {'lastKind': 'search', 'freeAction': true}, uid: 'ash', kind: ActKind.search),
         isNull);
