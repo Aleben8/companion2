@@ -655,6 +655,33 @@ class AbilityService {
     return {if (ItemService.shieldZone(u) != null) ItemService.shieldZone(u)!, ...immuneZones(await passives(uid, u))};
   }
 
+  // ------------------------------------------------------------------- lotta
+
+  /// Modificatori di [uid] per la lotta che sta per cominciare: le passive che contano in lotta, Ardore se è in
+  /// corso e l'effetto "per la prossima lotta entro 2 giri", che qui si consuma (Aura del drago solo contro un
+  /// altro giocatore: contro capipalestra, selvatici e leggendario resta per la prossima).
+  static Future<List<String>> battleMods(String uid, {required bool pvp}) async {
+    final ref = await pokemonRef(uid);
+    if (ref == null) return const [];
+    final p = (await ref.get()).data() ?? {};
+    final party = await PartyService.actualParty(uid);
+    final st = party == null ? null : (await TableService.stateRef(party).get()).data();
+    final round = st?['started'] == true ? _i(st!['round'], 1) : -1;
+    final mods = [for (final k in passivesOf(p)) if (kBattleAbilities.contains(k)) k];
+    final running = round < 1 ? null : activeAbility(p, round);
+    final def = running == null ? null : abilityDef(running);
+    if (def != null && kBattleAbilities.contains(def.key)) {
+      if (def.key == Ab.ardore) {
+        mods.add(def.key); // per 2 giri, in tutte le lotte
+      } else if (def.nextBattle && (pvp || def.key != Ab.auraDrago)) {
+        mods.add(def.key);
+        // si consuma alla prima lotta
+        await ref.set({'abilityActiveUntil': FieldValue.delete(), 'abilityActiveKey': FieldValue.delete()}, SetOptions(merge: true));
+      }
+    }
+    return mods;
+  }
+
   // ------------------------------------------------------------- sfide tra giocatori
 
   /// Sfida e Imboscata: niente rifugi, Repellente, Ibernazione o giocatori non disponibili.

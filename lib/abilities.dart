@@ -428,3 +428,18 @@ class Mobility {
 
 /// Limite della borsa con la passiva Lega.
 int bagLimitFor(Set<String> passives, int base) => passives.contains(Ab.lega) ? base + kLeagueBagBonus : base;
+
+// ---- effetti in lotta -----------------------------------------------------------
+
+/// Abilità che contano in lotta: si salvano sul combattente (`mods`) quando la battaglia parte.
+const Set<String> kBattleAbilities = {
+  Ab.pugnoDiFerro, Ab.ardore, Ab.riflessi, Ab.secrezione, Ab.rinforzo, Ab.auraDrago, Ab.danzaDrago, Ab.incanto,
+  Ab.statico, Ab.sangueCaldo, Ab.pelleSpessa, Ab.immunita, Ab.lega, Ab.corazza, Ab.sangueAntico, Ab.tenacia,
+};
+const int kStaticEnergyMalus = 2; // Statico: chi lotta contro di te parte con −2 energie
+const int kDragonAuraMalus = 2; // Aura del drago (solo contro giocatori)
+const int kDragonDanceDice = 1; // Danza del drago: +1 al dado per tutto lo scontro
+const int kAncientBloodDice = 2; // Sangue antico: +2 al dado contro il leggendario
+const int kAncientBloodCoins = 2; // Sangue antico: +2 monete a ogni vittoria su un capopalestra
+const int kArmorDefenseEnergy = 2; // Corazza: Difesa dà +2 energie in più
+const int kArdorFireBonus = 1; // Ardore: +1 danno alle mosse Fuoco

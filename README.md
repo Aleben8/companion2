@@ -306,6 +306,34 @@ Gli avvisi segreti (Gelata, Vedetta, Mente lucida, Imboscata, Borseggio, Spavent
 Le schermate di movimento (pannello Movimento, mappa) usano la stessa `Mobility` dei servizi, così costi e settori bloccati
 mostrati sono quelli veri; nei tuoi settori compare anche "✨ La tua Gelata è qui".
 
+### Abilità in lotta
+
+Quando la lotta parte davvero (`createGymBattle`, `joinBattle`, `createForcedBattle` in `battle_service.dart`) per ogni
+giocatore si salvano sul combattente i **modificatori attivi** (`mods`, da `AbilityService.battleMods`): le passive che contano
+in lotta, **Ardore** se è in corso e l'effetto "per la prossima lotta entro 2 giri", che lì **si consuma** (oppure scade dopo
+2 giri). **Aura del drago** vale solo contro un altro giocatore: contro capipalestra, selvatici e leggendario non si consuma.
+Il motore dei turni (`computeTurn`) li applica così (costanti in fondo a `lib/abilities.dart`):
+
+| Abilità | In lotta |
+|---|---|
+| **Statico** (passiva) e **Aura del drago** | l'avversario parte con −2 energie (`applyStartMods`) |
+| **Danza del drago** | +1 al dado per tutto lo scontro |
+| **Sangue antico** (passiva) | +2 al dado contro il leggendario; +2 monete a ogni vittoria su un capopalestra |
+| **Pugno di ferro** | il primo attacco andato a segno (Debole o Medio) conta come Forte |
+| **Ardore** | per 2 giri le mosse Fuoco fanno +1 danno (in tutte le lotte) |
+| **Riflessi** | la prima Schiva riesce anche contro un attacco imbloccabile |
+| **Rinforzo** | il primo colpo subito è dimezzato anche senza Difesa |
+| **Secrezione** | il primo attacco a segno avvelena sempre (Danno nel tempo) |
+| **Incanto** | il primo status alterato che ricevi torna all'avversario |
+| **Sangue caldo** (passiva) | il tuo Danno nel tempo dura 1 turno in più |
+| **Immunità**, **Pelle spessa**, **Lega** (passive) | niente Danno nel tempo / Rallentamento / Debuff (anche quello portato da uno scontro precedente) |
+| **Corazza** (passiva) | Difesa dà +2 energie in più (+5 invece di +3) |
+| **Tenacia** (passiva) | dopo una sconfitta niente recupero: riparti subito con metà PS |
+| **Imboscata** | chi tende l'imboscata ha +2 al dado nel primo turno (`firstTurnDice`) |
+
+Gli effetti "la prima volta" segnano sul combattente `used_pugno`, `used_riflessi`, `used_secrezione`, `used_rinforzo`,
+`used_incanto`. Tutto finisce nel resoconto del turno. Test: `test/battle_abilities_test.dart`.
+
 ## Indizi sulla mappa (live e tavolo)
 
 Tab **Party**, scheda "Indizi sulla mappa" (piazzamento, indizi trovati e dichiarati). La **ricerca** sta nella sezione dei movimenti:

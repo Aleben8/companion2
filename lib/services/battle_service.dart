@@ -211,6 +211,42 @@ class BattleService {
     };
   }
 
+  /// Abilità in lotta: salva sui combattenti i modificatori attivi ([modsA], [modsB]) e applica quelli di partenza
+  /// (Statico e Aura del drago: l'avversario parte con −2 energie; Immunità, Pelle spessa e Lega tolgono lo status
+  /// che non li colpisce). Restituisce le righe per il resoconto.
+  static List<String> applyStartMods(Map<String, dynamic> a, Map<String, dynamic>? b, List<String> modsA, List<String> modsB) {
+    final log = <String>[];
+    a['mods'] = modsA;
+    if (b != null) b['mods'] = modsB;
+    void malus(Map<String, dynamic> from, Map<String, dynamic>? to, String key, int n, String name) {
+      if (to == null || !(from['mods'] as List).contains(key)) return;
+      to['current_energies'] = max(0, _i(to['current_energies']) - n);
+      log.add('$name di ${from['pokemon_name']}: ${to['pokemon_name']} parte con −$n energie.');
+    }
+
+    for (final (me, opp) in [(a, b), (b, a)]) {
+      if (me == null) continue;
+      malus(me, opp, Ab.statico, kStaticEnergyMalus, 'Statico');
+      malus(me, opp, Ab.auraDrago, kDragonAuraMalus, 'Aura del drago');
+      final st = me['stato'];
+      if (st is Map && _immuneTo(me, '${st['type']}')) me.remove('stato');
+    }
+    return log;
+  }
+
+  /// Il combattente è immune a questo status? (Immunità: Danno nel tempo; Pelle spessa: Rallentamento; Lega: Debuff.)
+  static bool _immuneTo(Map p, String type) {
+    final mods = (p['mods'] as List?) ?? const [];
+    return switch (type) {
+      'dot' => mods.contains(Ab.immunita),
+      'slow' => mods.contains(Ab.pelleSpessa),
+      'debuff' => mods.contains(Ab.lega),
+      _ => false,
+    };
+  }
+
+  static bool _has(Map p, String key) => ((p['mods'] as List?) ?? const []).contains(key);
+
   static Future<Map<String, dynamic>> _pokemonData(String uid, String pk) async {
     final snap = await _db.collection('Users').doc(uid).collection('Pokemon').doc(pk).get();
     if (!snap.exists || snap.data() == null) {
@@ -277,6 +313,8 @@ class BattleService {
     final a = _combatant(uid, pkA, await _pokemonData(uid, pkA), await loadMoves(uid, pkA));
     if (firstTurnDice > 0) a['firstTurnDice'] = firstTurnDice;
     final b = _combatant(target, pkB, await _pokemonData(target, pkB), await loadMoves(target, pkB));
+    final start = applyStartMods(
+        a, b, await AbilityService.battleMods(uid, pvp: true), await AbilityService.battleMods(target, pvp: true));
     final id = '$uid-sfida-${_randomCode(3)}';
     await battleRef(id).set({
       'status': 'in_progress',
@@ -285,7 +323,7 @@ class BattleService {
       'party': party,
       'playerA': a,
       'playerB': b,
-      'last_turn_log': '$uid sfida $target: la lotta comincia subito! Scegli la tua mossa.',
+      'last_turn_log': ['$uid sfida $target: la lotta comincia subito! Scegli la tua mossa.', ...start].join('\n'),
       ...await _zoneFields(uid),
     });
     return id;
@@ -308,10 +346,18 @@ class BattleService {
     if (creator != null) await TableService.assertNotInRefuge(creator, me: false);
     await _assertNotHibernating(uid);
     if (creator != null) await _assertNotHibernating(creator, me: false);
+    // abilità in lotta: i modificatori di entrambi si fissano ora che la lotta parte davvero
+    final a = Map<String, dynamic>.from(data['playerA'] as Map);
+    final b = _combatant(uid, pk, d, moves);
+    final start = applyStartMods(a, b, creator == null ? const [] : await AbilityService.battleMods(creator, pvp: true),
+        await AbilityService.battleMods(uid, pvp: true));
     await ref.update({
       'status': 'in_progress',
-      'playerB': _combatant(uid, pk, d, moves),
-      'last_turn_log': 'La battaglia è iniziata! Scegli la tua mossa.',
+      'playerA.mods': a['mods'],
+      'playerA.current_energies': a['current_energies'],
+      'playerA.stato': a['stato'] ?? FieldValue.delete(),
+      'playerB': b,
+      'last_turn_log': ['La battaglia è iniziata! Scegli la tua mossa.', ...start].join('\n'),
     });
   }
 
@@ -396,6 +442,8 @@ class BattleService {
       ..['npc'] = true
       ..['trainer'] = l['trainer']
       ..['ai'] = l['ai'];
+    final me = _combatant(uid, pk, d, moves);
+    final start = applyStartMods(me, npc, await AbilityService.battleMods(uid, pvp: false), const []);
     final id = '$uid-$gymId-${_randomCode(3)}';
     await battleRef(id).set({
       'status': 'in_progress',
@@ -405,11 +453,14 @@ class BattleService {
       'gymName': gym['name'],
       'gymType': gym['type'],
       'party': party,
-      'playerA': _combatant(uid, pk, d, moves),
+      'playerA': me,
       'playerB': npc,
-      'last_turn_log': l['trainer'] != null
-          ? 'Il capopalestra ${l['trainer']} ti sfida con ${l['pokemon']}! Scegli la tua mossa.'
-          : '${l['pokemon']} leggendario ti sfida! Scegli la tua mossa.',
+      'last_turn_log': [
+        l['trainer'] != null
+            ? 'Il capopalestra ${l['trainer']} ti sfida con ${l['pokemon']}! Scegli la tua mossa.'
+            : '${l['pokemon']} ti sfida! Scegli la tua mossa.',
+        ...start,
+      ].join('\n'),
       ...await _zoneFields(uid),
       ...?extra,
     });
@@ -647,8 +698,18 @@ class BattleService {
         ? 'playerB'
         : (result.status == 'playerB_win' ? 'playerA' : null);
     if (loserKey != null) {
-      final loserUid = (data[loserKey] as Map?)?['uid'] as String?;
-      if (loserUid != null && !loserUid.startsWith('gym:')) await ItemService.setKo(loserUid);
+      final loser = data[loserKey] as Map?;
+      final loserUid = loser?['uid'] as String?;
+      if (loserUid != null && !loserUid.startsWith('gym:')) {
+        if (_has(loser!, Ab.tenacia)) {
+          // Tenacia: niente recupero, riparte subito con metà PS
+          await _db.collection('Users').doc(loserUid).collection('Pokemon').doc('${loser['pokemon_doc_id']}').set(
+              {'currentHp': kBaseHp ~/ 2, 'currentStatus': FieldValue.delete()}, SetOptions(merge: true));
+          await ref.update({'last_turn_log': '${result.updates['last_turn_log']}\nTenacia: ${loser['pokemon_name']} si rialza con metà PS!'});
+        } else {
+          await ItemService.setKo(loserUid);
+        }
+      }
     }
 
     if (result.winnerUid != null) {
@@ -696,6 +757,11 @@ class BattleService {
                 // Fortuna vale per lo strumento a caso, mai per la MT
                 items: await ItemService.luckyDrops(result.winnerUid!, [ItemService.gymPrize(winner, rnd: _rnd)], rnd: _rnd)));
           }
+          // Sangue antico: +2 monete a ogni vittoria su un capopalestra
+          final winnerKey = (data['playerA'] as Map?)?['uid'] == result.winnerUid ? 'playerA' : 'playerB';
+          if (_has(data[winnerKey] as Map? ?? const {}, Ab.sangueAntico)) {
+            parts.add(await ItemService.grant(result.winnerUid!, coins: kAncientBloodCoins));
+          }
           // badge della partita in corso: sblocca un'abilità del Pokémon (la prima volta in questa partita)
           if (await GymService.awardGameBadge(result.winnerUid!, data['gymId'] as String)) {
             final ab = await AbilityService.onBadge(result.winnerUid!);
@@ -724,8 +790,9 @@ class BattleService {
     // Difesa: recupera 3 energie
     for (final p in [a, b]) {
       if (p['last_action'] == 'defense') {
+        // Corazza: Difesa dà +2 energie in più
         p['current_energies'] =
-            min(_i(p['max_energies']), _i(p['current_energies']) + 3);
+            min(_i(p['max_energies']), _i(p['current_energies']) + 3 + (_has(p, Ab.corazza) ? kArmorDefenseEnergy : 0));
       }
     }
 
@@ -784,49 +851,104 @@ class BattleService {
         moveType: (move?['MoveType'] ?? '').toString(),
         action: action as String,
         targetRes: _lowerList(def['resistenze']),
-        diceBonus: (atk['candy'] == true ? kCandyBonus : 0) + (_i(data['turn_number']) == 0 ? _i(atk['firstTurnDice']) : 0),
+        diceBonus: (atk['candy'] == true ? kCandyBonus : 0) +
+            (_i(data['turn_number']) == 0 ? _i(atk['firstTurnDice']) : 0) + // Imboscata: primo turno
+            (_has(atk, Ab.danzaDrago) ? kDragonDanceDice : 0) + // Danza del drago
+            (data['legendary'] == true && _has(atk, Ab.sangueAntico) ? kAncientBloodDice : 0), // Sangue antico
         rnd: rnd,
       );
-      var total = max(0, dmg + roll.bonus + roll.elementalModifier);
-      if (roll.category == 'Nullo') total = 0; // tiro 1 = attacco Nullo
-      final zb = zoneBonus[(move?['MoveType'] ?? '').toString().trim().toLowerCase()] ?? 0;
+      final defAction = def['last_action'];
+      // Riflessi: la prima Schiva riesce anche contro un attacco imbloccabile
+      final reflexes = defAction == 'dodge' && _has(def, Ab.riflessi) && def['used_riflessi'] != true;
+      if (reflexes) def['used_riflessi'] = true;
+      final dodged = defAction == 'dodge' && (!roll.unblockable || reflexes);
+      var category = roll.category, bonus = roll.bonus, elem = roll.elementalModifier;
+      // Pugno di ferro: il primo attacco andato a segno conta almeno come Forte
+      if (category != 'Nullo' && !dodged && _has(atk, Ab.pugnoDiFerro) && atk['used_pugno'] != true &&
+          (category == 'Debole' || category == 'Medio')) {
+        atk['used_pugno'] = true;
+        category = 'Forte';
+        bonus = 3;
+        if (elem != 0) elem = elem.sign * 3;
+        log.write('Pugno di ferro: il colpo di ${atk['pokemon_name']} conta come Forte!\n');
+      }
+      var total = max(0, dmg + bonus + elem);
+      if (category == 'Nullo') total = 0; // tiro 1 = attacco Nullo
+      final moveType = (move?['MoveType'] ?? '').toString().trim().toLowerCase();
+      final zb = zoneBonus[moveType] ?? 0;
       if (total > 0 && zb > 0) total += zb; // bonus di zona (evento attivo)
+      final ardor = total > 0 && moveType == 'fuoco' && _has(atk, Ab.ardore);
+      if (ardor) total += kArdorFireBonus; // Ardore
       final glove = total > 0 && atk['glove'] == true;
       if (glove) total += kGloveDamage; // Guanto
 
       log.write('${atk['pokemon_name']} lancia $moveName '
-          '(${roll.category}, Dado: ${roll.rawDice}${roll.dice != roll.rawDice ? '+${roll.dice - roll.rawDice}' : ''}).\n');
+          '($category, Dado: ${roll.rawDice}${roll.dice != roll.rawDice ? '+${roll.dice - roll.rawDice}' : ''}).\n');
       if (zb > 0 && total > 0) log.write('Bonus di zona: +$zb.\n');
+      if (ardor) log.write('Ardore: +$kArdorFireBonus al danno Fuoco.\n');
       if (glove) log.write('Il Guanto aggiunge +$kGloveDamage al danno.\n');
-      if (roll.elementalModifier > 0) {
-        log.write('È super efficace! (+${roll.elementalModifier})\n');
-      } else if (roll.elementalModifier < 0) {
-        log.write('Non è molto efficace... (${roll.elementalModifier})\n');
+      if (elem > 0) {
+        log.write('È super efficace! (+$elem)\n');
+      } else if (elem < 0) {
+        log.write('Non è molto efficace... ($elem)\n');
       }
 
-      final defAction = def['last_action'];
+      var landed = false;
       if (total == 0) {
         log.write("L'attacco è risultato Nullo!\n");
-      } else if (defAction == 'dodge' && !roll.unblockable) {
-        log.write('${def['pokemon_name']} schiva abilmente!\n');
-      } else if (defAction == 'defense' && !roll.unblockable) {
-        final half = (total / 2).round();
-        def['current_hp'] = _i(def['current_hp']) - half;
-        log.write('${def['pokemon_name']} dimezza il danno a $half!\n');
+      } else if (dodged) {
+        log.write(reflexes && roll.unblockable
+            ? 'Riflessi! ${def['pokemon_name']} schiva anche l’attacco imbloccabile!\n'
+            : '${def['pokemon_name']} schiva abilmente!\n');
       } else {
-        def['current_hp'] = _i(def['current_hp']) - total;
-        log.write(roll.unblockable
-            ? 'È un attacco IMBLOCCABILE! Danno: $total.\n'
-            : 'Danno inflitto: $total.\n');
+        landed = true;
+        // Rinforzo: il primo colpo subito è dimezzato anche senza Difesa
+        final reinforce = _has(def, Ab.rinforzo) && def['used_rinforzo'] != true;
+        if (reinforce) def['used_rinforzo'] = true;
+        if (defAction == 'defense' && !roll.unblockable) {
+          final half = (total / 2).round();
+          def['current_hp'] = _i(def['current_hp']) - half;
+          log.write('${def['pokemon_name']} dimezza il danno a $half!\n');
+        } else if (reinforce) {
+          final half = (total / 2).round();
+          def['current_hp'] = _i(def['current_hp']) - half;
+          log.write('Rinforzo: ${def['pokemon_name']} dimezza il primo colpo a $half!\n');
+        } else {
+          def['current_hp'] = _i(def['current_hp']) - total;
+          log.write(roll.unblockable
+              ? 'È un attacco IMBLOCCABILE! Danno: $total.\n'
+              : 'Danno inflitto: $total.\n');
+        }
       }
 
-      if (roll.statusTriggered && defAction != 'dodge' && roll.status != null) {
-        if (def['amulet'] == true) {
-          def['amulet'] = false; // l'Amuleto blocca il primo status
-          log.write("L'Amuleto di ${def['pokemon_name']} blocca lo status alterato!\n");
+      // come prima: chi sceglie Schiva evita sempre lo status (anche se l'attacco imbloccabile lo colpisce)
+      Map<String, dynamic>? status = roll.statusTriggered && defAction != 'dodge' && roll.status != null ? _copy(roll.status) : null;
+      // Secrezione: il primo attacco a segno avvela sempre, qualunque sia la mossa
+      if (landed && _has(atk, Ab.secrezione) && atk['used_secrezione'] != true) {
+        atk['used_secrezione'] = true;
+        status = {'type': 'dot', 'damage_per_turn': (0.15 * exp(0.35 * dmg)).round().clamp(1, 10), 'remaining_turns': 2};
+        log.write('Secrezione: ${atk['pokemon_name']} avvelena il bersaglio!\n');
+      }
+      // Sangue caldo: il tuo Danno nel tempo dura 1 turno in più
+      if (status != null && status['type'] == 'dot' && _has(atk, Ab.sangueCaldo)) {
+        status['remaining_turns'] = _i(status['remaining_turns'], 2) + 1;
+      }
+      if (status != null) {
+        var target = def;
+        // Incanto: il primo status alterato che ricevi torna all'avversario
+        if (_has(def, Ab.incanto) && def['used_incanto'] != true) {
+          def['used_incanto'] = true;
+          target = atk;
+          log.write('Incanto: lo status torna a ${atk['pokemon_name']}!\n');
+        }
+        if (_immuneTo(target, '${status['type']}')) {
+          log.write('${target['pokemon_name']} è immune a ${statusLabel(status).toLowerCase()}.\n');
+        } else if (target['amulet'] == true) {
+          target['amulet'] = false; // l'Amuleto blocca il primo status
+          log.write("L'Amuleto di ${target['pokemon_name']} blocca lo status alterato!\n");
         } else {
-        def['stato'] = _copy(roll.status);
-        log.write('${def['pokemon_name']} è stato affetto da ${roll.status!['type']}.\n');
+          target['stato'] = status;
+          log.write('${target['pokemon_name']} è stato affetto da ${status['type']}.\n');
         }
       }
     }
@@ -838,6 +960,10 @@ class BattleService {
     void tick(Map<String, dynamic> p) {
       final s = p['stato'];
       if (s is! Map) return;
+      if (_immuneTo(p, '${s['type']}')) {
+        p.remove('stato'); // Immunità, Pelle spessa, Lega
+        return;
+      }
       switch (s['type']) {
         case 'dot':
           final d = _i(s['damage_per_turn'], 2);
@@ -894,6 +1020,10 @@ class BattleService {
       }
       updates['$k.stato'] = p['stato'] ?? FieldValue.delete();
       if (p['amulet'] == false) updates['$k.amulet'] = false;
+      // abilità "la prima volta" già usate in questa lotta
+      for (final f in const ['used_pugno', 'used_riflessi', 'used_secrezione', 'used_rinforzo', 'used_incanto']) {
+        if (p[f] == true) updates['$k.$f'] = true;
+      }
     }
     updates['turn_number'] = FieldValue.increment(1);
     updates['last_turn_log'] = log.toString();
