@@ -143,6 +143,10 @@ class _ShopBodyState extends State<_ShopBody> {
                 InfoChip('🪙 $coins', color: const Color(0xFFD08A00)),
                 const SizedBox(width: 8),
                 InfoChip('🎒 ${ItemService.bagCount(inv)}/$kBagLimit', color: full ? Pal.bad : Pal.accent),
+                if (ItemService.bargainActive(user)) ...[
+                  const SizedBox(width: 8),
+                  const InfoChip('🤝 Sconto attivo', color: Pal.ok),
+                ],
               ]),
               const SizedBox(height: 12),
               if (!showShop)
@@ -155,7 +159,7 @@ class _ShopBodyState extends State<_ShopBody> {
                   child: Text(shop.closed!, style: const TextStyle(color: Pal.sub)),
                 )
               else
-                for (final item in shop.stock) _row(item, inv, coins, full),
+                for (final item in shop.stock) _row(item, inv, coins, full, ItemService.priceFor(item, user)),
               if (!showShop)
                 const Text('L’emporio si apre dalla tab Tavolo, quando sei in un settore cittadino.',
                     style: TextStyle(color: Pal.sub, fontSize: 12)),
@@ -182,8 +186,8 @@ class _ShopBodyState extends State<_ShopBody> {
     );
   }
 
-  Widget _row(ItemDef item, Map<String, int> inv, int coins, bool full) {
-    final can = coins >= item.price && !full && !_busy;
+  Widget _row(ItemDef item, Map<String, int> inv, int coins, bool full, int price) {
+    final can = coins >= price && !full && !_busy;
     return Container(
       margin: const EdgeInsets.only(bottom: 10),
       padding: const EdgeInsets.all(10),
@@ -213,7 +217,7 @@ class _ShopBodyState extends State<_ShopBody> {
         FilledButton(
           style: FilledButton.styleFrom(backgroundColor: item.colors.first, visualDensity: VisualDensity.compact),
           onPressed: can ? () => _do(() => ItemService.buy(widget.uid, item.id), '${item.name} acquistato') : null,
-          child: Text('${item.price} 🪙'),
+          child: Text(price < item.price ? '$price 🪙 (era ${item.price})' : '$price 🪙'),
         ),
       ]),
     );

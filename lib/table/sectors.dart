@@ -31,7 +31,8 @@ extension SectorTypeX on SectorType {
         SectorType.impervio => 'Entrare costa +$kImperviousExtraCost azione. Cercando trovi più spesso strumenti '
             '(${(kImperviousSearchItemChance * 100).round()}%). Qui compare il leggendario.',
         SectorType.rifugio =>
-          '${kTableTurns ? 'A inizio turno' : 'A ogni nuova fase del giorno'} recuperi $kRefugeHp PS. Nessuno può sfidarti a battaglia.',
+          '${kTableTurns ? 'A inizio turno' : 'A ogni nuova fase del giorno'} recuperi $kRefugeHp PS e $kRefugeEnergy energie. '
+          'Nessuno può sfidarti a battaglia.',
         SectorType.passaggio => 'Da qui partono e qui arrivano Biglietto, treno e traghetto.',
       };
 
@@ -69,7 +70,8 @@ const double kWildDropChance = 0.25; // vittoria contro un selvatico: probabilit
 const int kWildStatMalus = 2; // il selvatico ha qualche punto statistica in meno del tuo Pokémon
 const int kImperviousExtraCost = 1; // entrare in un settore impervio
 const double kImperviousSearchItemChance = 0.30; // "Cerca" senza indizi in un settore impervio
-const int kRefugeHp = 5; // rifugio: PS recuperati a inizio turno
+const int kRefugeHp = 5; // rifugio: PS recuperati a ogni nuova fase (o inizio turno)
+const int kRefugeEnergy = 2; // rifugio: energie recuperate a ogni nuova fase (o inizio turno)
 
 // ---- Furtività: entrare in un settore dove ci sono altri giocatori -------------------
 // Tiro d20 + destrezza contro CD = base + settore + percezione del più attento nel settore.
@@ -107,3 +109,82 @@ const int kTracksActionCost = 1; // "Cerca tracce" (Esplorazione)
 const int kLocalsActionCost = 1; // "Parla con i locali" (Esplorazione)
 const int kLocalsBaseCd = 12; // CD base del tiro d20 per avere informazioni dai locali
 const int kLocalsRounds = 3; // di quanti giri fa parlano i locali
+
+// ---- Azioni di settore (Esplorazione) --------------------------------------------
+// Come "Parla con i locali": costano 1 azione, il giocatore tira al tavolo e il Master dice se ha
+// superato la CD; se riesce la app applica l'effetto. Se fallisce si perde solo l'azione.
+// Riposare non ha prova: l'effetto è immediato.
+const int kSectorActionCost = 1;
+const int kMinDc = 8; // CD minima (Seguire le tracce)
+const int kFollowBaseCd = 16; // Seguire le tracce: 16 − 2 × forza totale delle tracce del settore
+const int kBargainCd = 12;
+const int kEraseCd = 12;
+const int kClimbCd = 13;
+const int kBargainDiscount = 1; // Contrattare: −1 moneta a ogni acquisto (minimo 1) per il resto della fase/turno
+const int kRestHp = 10; // Riposare: PS in più
+const int kRestEnergy = 3; // Riposare: energie in più
+
+class SectorAction {
+  static const bargain = 'contrattare';
+  static const follow = 'seguire';
+  static const erase = 'cancellare';
+  static const climb = 'scalare';
+  static const rest = 'riposare';
+  static const all = [bargain, follow, erase, climb, rest];
+
+  static String label(String id) => switch (id) {
+        bargain => 'Contrattare',
+        follow => 'Seguire le tracce',
+        erase => 'Cancellare le tracce',
+        climb => 'Scalare',
+        rest => 'Riposare',
+        _ => id,
+      };
+
+  static IconData icon(String id) => switch (id) {
+        bargain => Icons.handshake,
+        follow => Icons.hiking,
+        erase => Icons.cleaning_services,
+        climb => Icons.terrain,
+        rest => Icons.hotel,
+        _ => Icons.help_outline,
+      };
+
+  /// In quale tipo di settore si può fare.
+  static bool allowed(String id, SectorType? t) => switch (id) {
+        bargain => t == SectorType.cittadino,
+        follow => t == SectorType.selvaggio,
+        erase => t != null && t != SectorType.cittadino,
+        climb => t == SectorType.impervio,
+        rest => t == SectorType.rifugio,
+        _ => false,
+      };
+
+  /// Serve una prova (CD e approvazione del Master)?
+  static bool needsCheck(String id) => id != rest;
+
+  /// CD fissa (Seguire le tracce dipende dalle tracce: [followCd]).
+  static int? fixedCd(String id) => switch (id) {
+        bargain => kBargainCd,
+        erase => kEraseCd,
+        climb => kClimbCd,
+        _ => null,
+      };
+
+  static String help(String id) => switch (id) {
+        bargain => 'Se riesci, per il resto della fase ogni acquisto all’emporio costa $kBargainDiscount moneta in meno (minimo 1).',
+        follow => 'Se riesci leggi la traccia più forte lasciata qui da chi è già ripartito: debole = qualcuno è passato, '
+            'chiara = anche dove è andato, evidente = anche chi era e da dove veniva. Più tracce ci sono, più è facile.',
+        erase => 'Se riesci, la traccia che hai lasciato entrando qui torna debole.',
+        climb => 'Se riesci, il tuo prossimo spostamento costa 1 azione in meno (anche 0).',
+        rest => 'Nessuna prova: recuperi $kRestHp PS e $kRestEnergy energie in più e perdi gli status alterati.',
+        _ => '',
+      };
+}
+
+/// CD di "Seguire le tracce": più tracce (e più forti) ci sono nel settore, più è facile.
+int followCd(int totalStrength) {
+  final cd = kFollowBaseCd - 2 * totalStrength;
+  return cd < kMinDc ? kMinDc : cd;
+}
+

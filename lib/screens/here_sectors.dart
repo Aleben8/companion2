@@ -127,6 +127,7 @@ class _HereSectorsState extends State<HereSectors> {
     List<String> notes(int s) {
       final out = <String>[];
       if (blocked.contains(s)) out.add('⛔ Bloccato: ${blockerName(s)}');
+      if (TableLayout.gymSector(_zone) == s) out.add('🏅 Qui c’è il capopalestra (${z.type})');
       for (final e in _active) {
         if (e['zone'] == _zone && e['legendary'] == true && e['defeatedBy'] == null && _i(e['sector']) == s) {
           out.add('⚡ Qui c’è ${e['legendaryName'] ?? 'il leggendario'}');
@@ -237,7 +238,8 @@ class _HereSectorsState extends State<HereSectors> {
             child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
               Row(children: [
                 Expanded(
-                  child: Text(type?.label ?? '$s',
+                  // il settore del capopalestra ha il nome del suo punto (es. "Bordo del cratere")
+                  child: Text(TableLayout.gymPlace(_zone, s) ?? type?.label ?? '$s',
                       style: TextStyle(fontWeight: FontWeight.w800, color: grey ? Pal.sub : Pal.ink)),
                 ),
                 if (here)

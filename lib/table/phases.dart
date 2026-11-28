@@ -46,6 +46,12 @@ class ActKind {
         search => 'cercare indizi',
         tracks => 'cercare tracce',
         locals => 'parlare con i locali',
+        // azioni di settore (lib/table/sectors.dart, SectorAction)
+        'contrattare' => 'contrattare',
+        'seguire' => 'seguire le tracce',
+        'cancellare' => 'cancellare le tracce',
+        'scalare' => 'scalare',
+        'riposare' => 'riposare',
         _ => 'agire',
       };
 }

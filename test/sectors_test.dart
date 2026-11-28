@@ -88,4 +88,32 @@ void main() {
     expect(reach('hub', 'hub'), isTrue); // ritorno gratis
     expect(reach('canyon', 'hub'), isFalse); // il ritorno vale solo verso la zona di partenza
   });
+
+  test('azioni di settore: dove si fanno e CD', () {
+    expect(SectorAction.allowed(SectorAction.bargain, SectorType.cittadino), isTrue);
+    expect(SectorAction.allowed(SectorAction.bargain, SectorType.selvaggio), isFalse);
+    expect(SectorAction.allowed(SectorAction.erase, SectorType.cittadino), isFalse);
+    expect(SectorAction.allowed(SectorAction.erase, SectorType.rifugio), isTrue);
+    expect(SectorAction.allowed(SectorAction.climb, SectorType.impervio), isTrue);
+    expect(SectorAction.allowed(SectorAction.rest, SectorType.rifugio), isTrue);
+    expect(SectorAction.needsCheck(SectorAction.rest), isFalse);
+    expect(SectorAction.fixedCd(SectorAction.climb), 13);
+    // seguire le tracce: 16 − 2 × forza totale, minimo 8
+    expect(followCd(0), 16);
+    expect(followCd(2), 12);
+    expect(followCd(10), kMinDc);
+  });
+
+  test('capipalestra: settore caratteristico e titolo', () {
+    expect(TableLayout.gymSector('vulcano'), 4); // impervio
+    expect(TableLayout.gymSector('isola'), 3); // passaggio
+    expect(TableLayout.title('vulcano', 4), 'Bordo del cratere');
+    expect(TableLayout.title('vulcano', 1), 'Cittadino 1');
+    // regola: serve una fase intera nella zona
+    final pos = {'zone': 'vulcano', 'sector': 4};
+    expect(TableService.zoneGymBlock(pos: pos, user: {'zoneSince': 3}, round: 3), isNotNull);
+    expect(TableService.zoneGymBlock(pos: pos, user: {'zoneSince': 3}, round: 4), isNull);
+    expect(TableService.zoneGymBlock(pos: {'zone': 'vulcano', 'sector': 1}, user: {'zoneSince': 1}, round: 4),
+        contains('Bordo del cratere'));
+  });
 }

@@ -1,4 +1,5 @@
 import '../mode.dart';
+import 'sectors.dart' show SectorTypeX;
 
 /// Le 8 macro-zone della mappa da tavolo: un Hub centrale e 7 biomi.
 /// `type` = tipo dominante del bioma (colori, capi di zona, leggendari).
@@ -78,6 +79,26 @@ class TableLayout {
   static int count(String zone) => kTableMode ? (sectors[zone] ?? kDefaultSectors[zone] ?? const []).length : kLiveSectors;
 
   /// Tipo del settore [n] (1..N) della zona; null dal vivo o se il settore non esiste.
+  /// Titolo di un settore nei testi per i giocatori: il nome del punto del capopalestra
+  /// (es. "Bordo del cratere"), altrimenti il tipo e il numero (es. "Cittadino 2").
+  static String title(String zone, int n) {
+    final gym = gymPlace(zone, n);
+    if (gym != null) return gym;
+    final t = typeOf(zone, n);
+    return t == null ? 'settore $n' : '${t.label} $n';
+  }
+
+  /// Settore del capopalestra della zona: il primo del tipo scelto in [kZoneGyms] (se la disposizione
+  /// del Master non ne ha, il settore 1). Null dal vivo o per zone senza capopalestra.
+  static int? gymSector(String zone) {
+    final g = kZoneGyms[zone];
+    if (g == null || !kTableMode) return null;
+    return firstOf(zone, g.sectorType) ?? 1;
+  }
+
+  /// Nome del punto se il settore [n] è quello del capopalestra.
+  static String? gymPlace(String zone, int n) => gymSector(zone) == n ? kZoneGyms[zone]?.place : null;
+
   static SectorType? typeOf(String zone, int n) {
     if (!kTableMode) return null;
     final list = sectors[zone] ?? kDefaultSectors[zone] ?? const [];
@@ -110,4 +131,24 @@ class TableLayout {
   static Map<String, List<String>> encode(Map<String, List<SectorType>> l) =>
       {for (final e in l.entries) e.key: [for (final t in e.value) t.name]};
 }
+
+/// Capipalestra del tavolo: uno per zona, del tipo della zona, nel suo punto più caratteristico.
+/// Il settore è il primo del tipo indicato nella disposizione in uso; il nome del punto diventa il
+/// titolo di quel settore.
+class ZoneGym {
+  final SectorType sectorType;
+  final String place;
+  const ZoneGym(this.sectorType, this.place);
+}
+
+const Map<String, ZoneGym> kZoneGyms = {
+  'hub': ZoneGym(SectorType.cittadino, 'Piazza centrale'),
+  'canyon': ZoneGym(SectorType.impervio, 'Gola del canyon'),
+  'giungla': ZoneGym(SectorType.selvaggio, 'Albero millenario'),
+  'neve': ZoneGym(SectorType.impervio, 'Ghiacciaio'),
+  'vulcano': ZoneGym(SectorType.impervio, 'Bordo del cratere'),
+  'campi': ZoneGym(SectorType.cittadino, 'La fattoria'),
+  'isola': ZoneGym(SectorType.passaggio, 'Relitto del porto'),
+  'colline': ZoneGym(SectorType.passaggio, 'Picco dei venti'),
+};
 

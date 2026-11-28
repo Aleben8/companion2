@@ -142,8 +142,56 @@ Distribuzione di partenza (30 settori):
 | **Cittadino** | Qui c'è l'emporio (l'Emporio si apre solo in un settore cittadino). Nessun incontro selvatico. Locali: CD −2. Tracce: forza −1 (minimo 1). |
 | **Selvaggio** | Entrando, 25% di incontrare un Pokémon selvatico del tipo della zona (forza simile alla tua, NPC come nelle palestre). Si sceglie: affrontarlo (vittoria: `kCoinsWild` monete e 25% di uno strumento) o fuggire (1 azione; se non ne hai, la perdi al turno dopo). Finché non scegli non puoi muoverti né cercare. |
 | **Impervio** | Entrare nel settore costa +1 azione. Tracce: forza +1. *Cerca* trova uno strumento al 30% invece del 15%. Qui compare il leggendario. Locali: CD +2. |
-| **Rifugio** | A ogni nuova fase del giorno chi è qui recupera 5 PS. Nessuno può sfidarlo a battaglia (né lui può combattere contro altri giocatori da qui); il Radar lo vede comunque. Locali: CD −1. |
+| **Rifugio** | A ogni nuova fase del giorno chi è qui recupera 5 PS e 2 energie. Nessuno può sfidarlo a battaglia (né lui può combattere contro altri giocatori da qui); il Radar lo vede comunque. Locali: CD −1. |
 | **Passaggio** | Da qui partono e qui arrivano Biglietto, treno e traghetto. Tracce: forza +1. |
+
+### Capipalestra del tavolo
+
+Uno per zona in gioco, del tipo della zona, nel suo punto più caratteristico (`kZoneGyms` in `lib/table/zones.dart`). Il nome
+del punto diventa il titolo di quel settore nei testi ("Ash è passato da Bordo del cratere"):
+
+| Zona | Tipo | Settore | Punto |
+|---|---|---|---|
+| Hub centrale | Normale | Cittadino 1 | Piazza centrale |
+| Canyon | Roccia | Impervio 4 | Gola del canyon |
+| Giungla | Erba | Selvaggio 4 | Albero millenario |
+| Regione innevata | Ghiaccio | Impervio 4 | Ghiacciaio |
+| Vulcano | Fuoco | Impervio 4 | Bordo del cratere |
+| Campi e fattoria | Normale | Cittadino 1 | La fattoria |
+| Isola dei relitti | Acqua | Passaggio 3 | Relitto del porto |
+| Colline ventose | Volante | Passaggio 3 | Picco dei venti |
+
+(Se il Master cambia i settori si usa il primo del tipo indicato, altrimenti il settore 1.) A ogni "Nuova partita" i
+capipalestra vengono generati di nuovo (Pokémon, allenatore e mosse casuali del tipo), in `Party/{codice}/zoneGyms`.
+**Si sfidano solo dal loro settore e dopo essere rimasti nella zona per una fase intera**: bisogna esserci già all'inizio della
+fase in corso (`Users/{uid}.zoneSince`, aggiornato a ogni cambio di zona); chi arriva al pomeriggio lo sfida dalla sera.
+Il bottone "Sfida il capopalestra" sta nella scheda "La tua posizione". Vittoria: monete e medaglia della palestra
+(`badges.zona-<zona>`, la prima volta), come dal vivo. Sfidarlo non costa azioni (come il leggendario).
+
+### Azioni di settore (Esplorazione)
+
+Come "Parla con i locali": costano **1 azione**, il giocatore tira il dado al tavolo e il Master (in cima alla sua tab Tavolo,
+"Prove da approvare") vede **la CD completa** e risponde "Sì" o "No"; se è sì la app applica l'effetto. L'esito lo vede solo il
+giocatore, in una scheda con il titolo dell'azione. Se la prova fallisce si perde solo l'azione. Una prova alla volta.
+
+| Azione | Settore | CD | Se riesce |
+|---|---|---|---|
+| **Contrattare** | cittadino | 12 | Per il resto della fase ogni acquisto all'emporio costa 1 moneta in meno (minimo 1). |
+| **Seguire le tracce** | selvaggio | max(8, 16 − 2 × forza totale delle tracce visibili nel settore) | Leggi la traccia più forte di chi è già **ripartito** da qui: debole = "qualcuno è passato", chiara = anche dove è andato, evidente = anche chi era e da dove veniva. |
+| **Cancellare le tracce** | tutti tranne cittadino | 12 | La traccia che hai lasciato entrando nel settore torna a forza 1. |
+| **Scalare** | impervio | 13 | Il prossimo spostamento costa 1 azione in meno (anche 0): `Users/{uid}.moveDiscount`, consumato da `moveTo`. |
+| **Riposare** | rifugio | nessuna prova | Subito: +10 PS, +3 energie e via gli status alterati. |
+
+Costanti e testi in `lib/table/sectors.dart` (`SectorAction`, `kMinDc`, `followCd`…); codice in
+`TableService.sectorAction` e `answerCheck` (richieste in `Party/{codice}/localsRequests` con `kind` e `cd`).
+
+### PS, energie e status restano tra uno scontro e l'altro
+
+Alla fine di ogni battaglia (o fuggendo) il Pokémon si porta dietro **PS**, **energie** e l'eventuale **status alterato**
+con i turni rimasti (`currentHp`, `currentEnergy`, `currentStatus` sul documento del Pokémon). Dopo una sconfitta, finito il
+recupero, riparte pieno e senza status. In Home, accanto ai PS, ci sono le energie (⚡) e lo status. Pozione e Super Pozione
+(PS), **Elisir** (energie) e **Antidoto** (status) si usano anche dalla Borsa; il rifugio ricarica PS ed energie a ogni fase;
+Riposare fa di più. Capipalestra, selvatici e leggendari partono sempre pieni.
 
 ### Furtività: entrare in un settore dove c'è qualcuno
 

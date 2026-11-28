@@ -27,7 +27,8 @@ class LocalsCheck {
   final String uid;
   final String place;
   final SectorType? type;
-  const LocalsCheck(this.uid, this.place, this.type);
+  final String zone;
+  const LocalsCheck(this.uid, this.place, this.type, [this.zone = '']);
   int get cdModifier => type?.localsCdModifier ?? 0;
 }
 
@@ -130,6 +131,24 @@ class TableService {
     for (final d in (await eventsCol(party).get()).docs) {
       batch.delete(d.reference);
     }
+    // capipalestra del tavolo: uno per zona in gioco, nuovi a ogni partita
+    for (final d in (await zoneGyms(party).get()).docs) {
+      batch.delete(d.reference);
+    }
+    if (inPlay != null) {
+      for (final z in inPlay) {
+        final g = kZoneGyms[z];
+        if (g == null) continue;
+        final spec = zoneSpec(z);
+        batch.set(zoneGyms(party).doc(z), {
+          'zone': z,
+          'place': g.place,
+          'name': 'Capopalestra · ${g.place}',
+          'type': spec.type,
+          'leader': await GymService.generateLeader(spec.type),
+        });
+      }
+    }
     for (final d in (await trapsCol(party).get()).docs) {
       batch.delete(d.reference);
     }
@@ -172,6 +191,9 @@ class TableService {
           'waitUntilAction': FieldValue.delete(),
           'zoneMoves': FieldValue.delete(),
           'freeAction': FieldValue.delete(),
+          'bargainUntil': FieldValue.delete(),
+          'zoneSince': 1, // tutti partono dall'Hub alla prima fase
+          'moveDiscount': FieldValue.delete(),
           'refugeRound': FieldValue.delete(),
           'localsInfo': FieldValue.delete(),
           'trappedSkip': 0,
@@ -624,6 +646,7 @@ class TableService {
           if (kind != ActKind.forced) 'lastKind': kind,
           if (kind != ActKind.forced) 'freeAction': FieldValue.delete(),
           if (kind == ActKind.zone) 'zoneMoves': FieldValue.arrayUnion([from]),
+          if (kind == ActKind.zone) 'zoneSince': from, // capipalestra: serve restare una fase intera
         },
         SetOptions(merge: true),
       );
@@ -714,9 +737,14 @@ class TableService {
     final pk = await activePokemon(uid, u);
     if (pk == null) return;
     final pref = uref.collection('Pokemon').doc(pk);
-    final hp = BattleService.currentHp((await pref.get()).data());
-    if (hp >= kBaseHp) return;
-    await pref.set({'currentHp': min(kBaseHp, hp + kRefugeHp)}, SetOptions(merge: true));
+    final p = (await pref.get()).data() ?? {};
+    final hp = BattleService.currentHp(p);
+    final en = BattleService.startEnergy(p);
+    if (hp >= kBaseHp && en >= kBaseEnergy) return;
+    await pref.set({
+      'currentHp': min(kBaseHp, hp + kRefugeHp),
+      'currentEnergy': min(kBaseEnergy, en + kRefugeEnergy),
+    }, SetOptions(merge: true));
   }
 
   /// Pokémon con cui il giocatore è entrato (salvato al login); altrimenti il primo che ha.
@@ -839,7 +867,9 @@ class TableService {
       throw Exception('Il settore $sector di ${spec.name} è bloccato');
     }
     if (cur?['zone'] == zone && _i(cur?['sector']) == sector) throw Exception('Sei già in questo settore');
-    final cost = moveCost(events, from, zone, shield: shield, sector: sector);
+    var cost = moveCost(events, from, zone, shield: shield, sector: sector);
+    final discount = _i(me?['moveDiscount']); // Scalare riuscito: il prossimo spostamento costa meno
+    if (discount > 0) cost = max(0, cost - discount);
     var needTicket = false;
     final freeReturn = route == MoveRoute.ticket && freeReturnZone(me?['ticketReturn'] as Map?, cur) == zone;
     if (route == MoveRoute.ticket && !freeReturn) {
@@ -848,6 +878,7 @@ class TableService {
       needTicket = true;
     }
     await _spend(party, uid, cost, setPos: {'zone': zone, 'sector': sector}, kind: zone == from ? ActKind.move : ActKind.zone);
+    if (discount > 0) await ItemService.userRef(uid).set({'moveDiscount': FieldValue.delete()}, SetOptions(merge: true));
     if (needTicket) {
       await ItemService.consume(uid, ItemId.biglietto);
       // andata con il Biglietto: il ritorno alla zona di partenza è gratis
@@ -978,7 +1009,7 @@ class TableService {
     final zone = '${pos['zone']}';
     final type = TableLayout.typeOf(zone, _i(pos['sector']));
     final place = '${zoneSpec(zone).name}, settore ${pos['sector']}${type == null ? '' : ' (${type.label.toLowerCase()})'}';
-    return LocalsCheck(uid, place, type);
+    return LocalsCheck(uid, place, type, zone);
   }
 
   /// Il Master ha visto il tiro al tavolo e dice se [uid] ha superato la CD. Il racconto dei locali
@@ -988,7 +1019,8 @@ class TableService {
     final check = await localsCheck(party, uid);
     final lines = success ? await _localsLines(party, uid) : const <String>[];
     await ItemService.userRef(uid).set({
-      'localsInfo': {'place': check.place, 'success': success, 'lines': lines, 'round': TableClock.round},
+      // al giocatore si parla di zone, non di settori numerati
+      'localsInfo': {'place': zoneSpec(check.zone).name, 'success': success, 'lines': lines, 'round': TableClock.round},
     }, SetOptions(merge: true));
   }
 
@@ -1053,6 +1085,197 @@ class TableService {
     await localsRequests(party).doc(requestId).delete();
   }
 
+  // ---------------------------------------------------------- capipalestra
+
+  static CollectionReference<Map<String, dynamic>> zoneGyms(String party) =>
+      PartyService.party(party).collection('zoneGyms');
+
+  static Stream<QuerySnapshot<Map<String, dynamic>>> watchZoneGyms(String party) =>
+      shared('zoneGyms:$party', () => zoneGyms(party).snapshots());
+
+  /// Perché non puoi sfidare il capopalestra della tua zona adesso (null = puoi):
+  /// devi essere nel suo settore ed essere rimasto nella zona per una fase intera
+  /// (eri già lì all'inizio della fase in corso).
+  static String? zoneGymBlock({required Map? pos, required Map<String, dynamic>? user, required int round}) {
+    if (pos == null) return 'Non sei ancora sulla mappa';
+    final zone = '${pos['zone']}';
+    final sector = TableLayout.gymSector(zone);
+    if (sector == null) return 'In ${zoneSpec(zone).name} non c’è un capopalestra';
+    if (_i(pos['sector']) != sector) return 'Il capopalestra è a ${TableLayout.title(zone, sector)}';
+    if (user?['wildEncounter'] is Map || user?['spotted'] is Map) return 'Prima risolvi quello che ti è successo';
+    final since = _i(user?['zoneSince']);
+    if (round <= since) {
+      return 'Resta in ${zoneSpec(zone).name} per una fase intera: potrai sfidarlo ${whenLabel(since + 1, round)}';
+    }
+    return null;
+  }
+
+  /// Sfida il capopalestra della tua zona: battaglia contro un NPC (vittoria: monete e medaglia).
+  static Future<String> challengeZoneGym({required String party, required String uid, required String pk}) async {
+    await loadLayout(party);
+    final st = (await stateRef(party).get()).data();
+    final me = (await ItemService.userRef(uid).get()).data();
+    final pos = me?['pos'] as Map?;
+    final why = zoneGymBlock(pos: pos, user: me, round: _i(st?['round'], 1));
+    if (why != null) throw Exception(why);
+    final zone = '${pos!['zone']}';
+    final gym = (await zoneGyms(party).doc(zone).get()).data();
+    if (gym == null) throw Exception('Il capopalestra non c’è ancora: il Master deve avviare una nuova partita');
+    return BattleService.createGymBattle(party: party, gymId: 'zona-$zone', gym: gym, uid: uid, pk: pk);
+  }
+
+  // ------------------------------------------------------- azioni di settore
+
+  /// Tracce recenti (ancora visibili) lasciate da altri giocatori nel settore.
+  static List<Map<String, dynamic>> _visibleTracesIn(List<Map<String, dynamic>> all, String zone, int sector, String uid) {
+    final round = TableClock.round;
+    return [
+      for (final t in all)
+        if (t['uid'] != uid &&
+            t['zone'] == zone &&
+            _i(t['sector']) == sector &&
+            _i(t['round']) >= round - kTraceRoundsPerStrength * _i(t['strength'], kTraceBaseStrength))
+          t,
+    ];
+  }
+
+  /// Azione di settore (Esplorazione). Con prova: spende l'azione e manda la richiesta al Master
+  /// (che risponde con [answerCheck]). Riposare: effetto subito. Restituisce un messaggio per il giocatore.
+  static Future<String> sectorAction(String party, String uid, String id) async {
+    final me = (await ItemService.userRef(uid).get()).data();
+    final pos = me?['pos'] as Map?;
+    if (pos == null) throw Exception('Non sei ancora sulla mappa');
+    if (me?['wildEncounter'] is Map) throw Exception('Prima affronta o sfuggi al Pokémon selvatico');
+    if (me?['spotted'] is Map) throw Exception('Ti hanno notato: prima elùdili (azione o Fune di fuga)');
+    await loadLayout(party);
+    final zone = '${pos['zone']}';
+    final sector = _i(pos['sector']);
+    final type = TableLayout.typeOf(zone, sector);
+    if (!SectorAction.allowed(id, type)) throw Exception('${SectorAction.label(id)} non si può fare in questo settore');
+    if (!SectorAction.needsCheck(id)) {
+      // Riposare: nessuna prova
+      final pk = await activePokemon(uid, me);
+      if (pk == null) throw Exception('Nessun Pokémon');
+      if (ItemService.isActive(me?['koUntil'])) throw Exception('Il tuo Pokémon è esausto: serve il recupero o un Revitalizzante');
+      await _spend(party, uid, kSectorActionCost, kind: id);
+      final pref = ItemService.userRef(uid).collection('Pokemon').doc(pk);
+      final p = (await pref.get()).data() ?? {};
+      final hp = BattleService.currentHp(p), en = BattleService.startEnergy(p);
+      final newHp = min(kBaseHp, hp + kRestHp), newEn = min(kBaseEnergy, en + kRestEnergy);
+      await pref.set({'currentHp': newHp, 'currentEnergy': newEn, 'currentStatus': FieldValue.delete()}, SetOptions(merge: true));
+      return 'Hai riposato: +${newHp - hp} PS, +${newEn - en} energie, nessuno status alterato';
+    }
+    final pending = await localsRequests(party).where('uid', isEqualTo: uid).get();
+    if (pending.docs.isNotEmpty) throw Exception('Hai già una prova in attesa del Master');
+    var cd = SectorAction.fixedCd(id);
+    if (cd == null) {
+      final all = (await PartyService.party(party).collection('traces').get()).docs.map((d) => d.data()).toList();
+      final total = _visibleTracesIn(all, zone, sector, uid).fold<int>(0, (a, t) => a + _i(t['strength'], kTraceBaseStrength));
+      cd = followCd(total);
+    }
+    await _spend(party, uid, kSectorActionCost, kind: id);
+    final place = '${zoneSpec(zone).name}, settore $sector${type == null ? '' : ' (${type.label.toLowerCase()})'}';
+    await localsRequests(party).add({'uid': uid, 'kind': id, 'cd': cd, 'place': place, 'at': FieldValue.serverTimestamp()});
+    return 'Richiesta inviata al Master: tira il dado (CD $cd)';
+  }
+
+  /// Il Master risponde a una prova di settore: se è riuscita la app applica l'effetto.
+  /// Il giocatore vede l'esito in una scheda (`Users/{uid}.localsInfo`, con il titolo dell'azione).
+  static Future<void> answerCheck(String party, String requestId, {required bool success}) async {
+    final ref = localsRequests(party).doc(requestId);
+    final r = (await ref.get()).data();
+    if (r == null) return;
+    final uid = '${r['uid']}';
+    final kind = r['kind'] as String?;
+    if (kind == null || kind == 'locals') return answerLocals(party, requestId, uid, success: success);
+    final round = _i((await stateRef(party).get()).data()?['round'], 1);
+    final uref = ItemService.userRef(uid);
+    final lines = <String>[];
+    if (success) {
+      switch (kind) {
+        case SectorAction.bargain:
+          await uref.set({'bargainUntil': round}, SetOptions(merge: true));
+          lines.add('Per il resto della ${kTableTurns ? 'turno' : 'fase'} ogni acquisto all’emporio costa '
+              '$kBargainDiscount moneta in meno (minimo 1).');
+        case SectorAction.follow:
+          lines.addAll(await _followLines(party, uid));
+        case SectorAction.erase:
+          lines.add(await _eraseMyTrace(party, uid)
+              ? 'La traccia che hai lasciato entrando qui ora è debole.'
+              : 'Non c’era nessuna tua traccia da cancellare qui.');
+        case SectorAction.climb:
+          await uref.set({'moveDiscount': 1}, SetOptions(merge: true));
+          lines.add('Il tuo prossimo spostamento costa 1 azione in meno.');
+      }
+    }
+    await uref.set({
+      'localsInfo': {
+        'title': SectorAction.label(kind),
+        'place': r['place'] ?? '',
+        'success': success,
+        'lines': lines,
+        'failText': 'Prova non riuscita: hai perso solo l’azione.',
+        'round': round,
+      },
+    }, SetOptions(merge: true));
+    await ref.delete();
+  }
+
+  /// Seguire le tracce: la traccia più forte di chi è già ripartito da qui, letta secondo la sua forza.
+  static Future<List<String>> _followLines(String party, String uid) async {
+    final pos = (await ItemService.userRef(uid).get()).data()?['pos'] as Map?;
+    final zone = '${pos?['zone']}';
+    final sector = _i(pos?['sector']);
+    final all = (await PartyService.party(party).collection('traces').get()).docs.map((d) => d.data()).toList();
+    final arrivals = _visibleTracesIn(all, zone, sector, uid).where((t) => t['kind'] == 'move').toList()
+      ..sort((a, b) {
+        final s = _i(b['strength'], 1).compareTo(_i(a['strength'], 1));
+        return s != 0 ? s : _i(b['round']).compareTo(_i(a['round']));
+      });
+    for (final t in arrivals) {
+      // "chiusa": lo stesso giocatore è poi ripartito da questo settore
+      final leave = all.where((x) =>
+          x['uid'] == t['uid'] &&
+          x['kind'] == 'move' &&
+          x['fromZone'] == zone &&
+          _i(x['fromSector']) == sector &&
+          _i(x['round']) >= _i(t['round']));
+      if (leave.isEmpty) continue;
+      final out = leave.reduce((a, b) => _i(a['round']) <= _i(b['round']) ? a : b);
+      final str = _i(t['strength'], kTraceBaseStrength);
+      final dest = out['zone'] == zone
+          ? TableLayout.title(zone, _i(out['sector']))
+          : '${TableLayout.title('${out['zone']}', _i(out['sector']))} (${zoneSpec('${out['zone']}').name})';
+      final from = t['fromZone'] == null
+          ? 'chissà dove'
+          : (t['fromZone'] == zone
+              ? TableLayout.title(zone, _i(t['fromSector']))
+              : '${TableLayout.title('${t['fromZone']}', _i(t['fromSector']))} (${zoneSpec('${t['fromZone']}').name})');
+      return [
+        switch (str) {
+          <= 1 => 'Traccia debole: qualcuno è passato di qui (${roundRef(t['round'])}).',
+          2 => 'Traccia chiara: qualcuno è passato di qui ed è andato verso $dest (${roundRef(t['round'])}).',
+          _ => 'Traccia evidente: ${t['uid']} è passato di qui, veniva da $from ed è andato verso $dest '
+              '(${roundRef(t['round'])}).',
+        },
+      ];
+    }
+    return ['Non trovi tracce da seguire: nessuno è ripartito da qui di recente.'];
+  }
+
+  /// Cancellare le tracce: la traccia lasciata entrando nel settore in cui sei torna a forza 1.
+  static Future<bool> _eraseMyTrace(String party, String uid) async {
+    final pos = (await ItemService.userRef(uid).get()).data()?['pos'] as Map?;
+    final mine = (await PartyService.party(party).collection('traces').where('uid', isEqualTo: uid).get())
+        .docs
+        .where((d) => d.data()['kind'] == 'move' && d.data()['zone'] == pos?['zone'] && _i(d.data()['sector']) == _i(pos?['sector']))
+        .toList()
+      ..sort((a, b) => _i(b.data()['round']).compareTo(_i(a.data()['round'])));
+    if (mine.isEmpty) return false;
+    await mine.first.reference.update({'strength': 1});
+    return true;
+  }
+
   /// Il giocatore chiude il messaggio dei locali.
   static Future<void> dismissLocals(String uid) =>
       ItemService.userRef(uid).update({'localsInfo': FieldValue.delete()});
@@ -1060,32 +1283,37 @@ class TableService {
   static Future<List<String>> _localsLines(String party, String uid) async {
     final pos = (await ItemService.userRef(uid).get()).data()?['pos'] as Map?;
     final zone = '${pos?['zone']}';
+    final zoneName = zoneSpec(zone).name;
     final lines = <String>[];
     final round = TableClock.round;
     final traces = (await PartyService.party(party).collection('traces').get()).docs.map((d) => d.data()).where((t) =>
         t['uid'] != uid && t['zone'] == zone && _i(t['round']) >= round - kLocalsRounds);
     for (final t in traces) {
       final s = _i(t['strength'], kTraceBaseStrength);
-      lines.add('${t['uid']} è ${t['kind'] == 'search' ? 'stato visto cercare' : 'passato'} nel settore ${t['sector']} '
+      // il settore si chiama col suo titolo (es. "Cittadino 2"), non "settore N"
+      final where = TableLayout.title(zone, _i(t['sector']));
+      lines.add('${t['uid']} è ${t['kind'] == 'search' ? 'stato visto cercare qualcosa a' : 'passato da'} $where '
           '(${roundRef(t['round'])}, traccia ${traceStrengthLabel(s)})');
     }
     if (traces.isEmpty) {
       lines.add(kTableTurns
-          ? 'Negli ultimi $kLocalsRounds giri non è passato nessuno da queste parti'
-          : 'Nelle ultime $kLocalsRounds fasi del giorno non è passato nessuno da queste parti');
+          ? 'Negli ultimi $kLocalsRounds giri non è passato nessuno per $zoneName'
+          : 'Nelle ultime $kLocalsRounds fasi del giorno non è passato nessuno per $zoneName');
     }
     for (final d in (await eventsCol(party).get()).docs) {
       final e = d.data();
       if (e['zone'] != zone || (e['status'] != 'announced' && e['status'] != 'scheduled')) continue;
       final start = _i(e['startRound']);
       if (start >= kManualStart || start - round > kWeatherLookahead + 1) continue;
-      lines.add('Si dice che presto ci sarà: ${e['name']}');
+      lines.add('Si dice che presto in $zoneName ci sarà: ${e['name']}');
     }
     final clues = (await PartyService.party(party).collection('clues').where('status', isEqualTo: 'hidden').get())
         .docs
         .where((d) => d.data()['ownerUid'] != uid && (d.data()['place'] as Map?)?['zone'] == zone)
         .length;
-    lines.add(clues == 0 ? 'Nessuno ha visto nascondere qualcosa in zona' : 'Qualcuno ha nascosto qualcosa in zona ($clues)');
+    lines.add(clues == 0
+        ? 'Nessuno ha visto nascondere qualcosa in $zoneName'
+        : 'Qualcuno ha nascosto qualcosa in $zoneName ($clues)');
     return lines;
   }
 

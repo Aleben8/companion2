@@ -276,12 +276,13 @@ class _TableTabState extends State<TableTab> {
     final lines = [for (final l in (info['lines'] as List? ?? [])) '$l'];
     return DropCard(
       colors: Pal.gold,
-      label: 'I locali ti raccontano',
+      // stessa scheda per i locali e per l'esito delle azioni di settore (titolo dell'azione)
+      label: info['title'] == null ? 'I locali ti raccontano' : '${info['title']} · ${ok ? 'riuscito' : 'non riuscito'}',
       labelOnTop: true,
       child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
         Text('${info['place']}', style: const TextStyle(color: Pal.sub, fontSize: 12)),
         const SizedBox(height: 6),
-        if (!ok) const Text('I locali non sanno nulla (o non vogliono parlare).'),
+        if (!ok) Text('${info['failText'] ?? 'I locali non sanno nulla (o non vogliono parlare).'}'),
         for (final l in lines) Padding(padding: const EdgeInsets.only(bottom: 4), child: Text('• $l')),
         const SizedBox(height: 6),
         DropButton(
@@ -568,7 +569,7 @@ class _TableTabState extends State<TableTab> {
                     if (table) _sightings(me, _i(st!['round'])),
                     if (table && _master) _localsRequests(),
                     if (table) ...[
-                      _positionCard(pos, st: st, events: events, me: me),
+                      _positionCard(pos, st: st, events: events, me: me, user: uSnap.data),
                     ] else ...[
                       _positionCard(pos),
                       ..._eventCards(events, st!, pos, me),
@@ -887,6 +888,65 @@ class _TableTabState extends State<TableTab> {
     );
   }
 
+  /// Capopalestra della zona: chi è, dove sta e "Sfida" (se sei nel suo settore da almeno una fase).
+  /// Icona provvisoria (medaglia).
+  Widget _zoneGym(Map pos, Map<String, dynamic> st, Map<String, dynamic>? user) {
+    final zone = '${pos['zone']}';
+    final sector = TableLayout.gymSector(zone);
+    if (sector == null) return const SizedBox.shrink();
+    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+      stream: TableService.watchZoneGyms(_party!),
+      builder: (context, snap) {
+        final docs = snap.data?.docs ?? const <QueryDocumentSnapshot<Map<String, dynamic>>>[];
+        final gym = docs.where((d) => d.id == zone).map((d) => d.data()).firstOrNull;
+        if (gym == null) return const SizedBox.shrink();
+        final leader = gym['leader'] as Map? ?? const {};
+        final badges = user?['badges'];
+        final beaten = badges is Map && badges['zona-$zone'] != null;
+        final block = TableService.zoneGymBlock(pos: pos, user: user, round: _i(st['round']));
+        return Container(
+          margin: const EdgeInsets.only(top: 8),
+          padding: const EdgeInsets.all(10),
+          decoration: BoxDecoration(
+            color: Colors.white.withOpacity(0.7),
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: typeColors('${gym['type']}').first, width: 1.5),
+          ),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+            Row(children: [
+              Icon(Icons.military_tech, color: typeColors('${gym['type']}').first),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text('Capopalestra · ${gym['place']}',
+                    style: const TextStyle(fontWeight: FontWeight.w800)),
+              ),
+              if (beaten) const InfoChip('Medaglia presa', color: Pal.ok),
+            ]),
+            Text(
+              '${leader['trainer'] ?? 'Allenatore'} con ${leader['pokemon'] ?? '?'} (${gym['type']}) · '
+              '${TableLayout.title(zone, sector)}',
+              style: const TextStyle(color: Pal.sub, fontSize: 12),
+            ),
+            const SizedBox(height: 8),
+            DropButton(
+              label: block ?? (beaten ? 'Sfida di nuovo' : 'Sfida il capopalestra'),
+              icon: block == null ? Icons.military_tech : null,
+              colors: typeColors('${gym['type']}'),
+              height: 44,
+              onTap: _busy || block != null
+                  ? null
+                  : () => _run(() async {
+                        final id = await TableService.challengeZoneGym(
+                            party: _party!, uid: _s.userName!, pk: _s.pokemonId!);
+                        if (mounted) widget.onBattle(id);
+                      }),
+            ),
+          ]),
+        );
+      },
+    );
+  }
+
   /// I tre blocchi del Tavolo: ognuno apre il suo pannello dal basso.
   /// Icone provvisorie (Strumenti usa già la borsa del giocatore): da sostituire con quelle fornite.
   Widget _actionTiles(String me) {
@@ -937,44 +997,62 @@ class _TableTabState extends State<TableTab> {
           if (reqs.isEmpty) return const SizedBox.shrink();
           return DropCard(
             colors: Pal.gold,
-            label: 'Richieste ai locali',
+            label: 'Prove da approvare',
             labelOnTop: true,
             child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
               for (final r in reqs)
-                FutureBuilder<LocalsCheck>(
-                  future: TableService.localsCheck(_party!, '${r.data()['uid']}'),
-                  builder: (context, c) {
-                    final uid = '${r.data()['uid']}';
-                    final m = c.data?.cdModifier ?? 0;
+                Builder(builder: (context) {
+                  final uid = '${r.data()['uid']}';
+                  final kind = r.data()['kind'] as String?;
+                  final locals = kind == null || kind == 'locals';
+                  Widget answer() => Row(children: [
+                        const Expanded(child: Text('Ha superato la CD?', style: TextStyle(fontSize: 13))),
+                        TextButton(
+                          onPressed: _busy
+                              ? null
+                              : () => _run(() => TableService.answerCheck(_party!, r.id, success: false),
+                                  ok: 'Risposta inviata a $uid'),
+                          child: const Text('No'),
+                        ),
+                        FilledButton(
+                          onPressed: _busy
+                              ? null
+                              : () => _run(() => TableService.answerCheck(_party!, r.id, success: true),
+                                  ok: 'Risposta inviata a $uid'),
+                          child: const Text('Sì'),
+                        ),
+                      ]);
+                  if (!locals) {
+                    // azione di settore: il Master vede la CD completa
                     return Padding(
                       padding: const EdgeInsets.only(bottom: 10),
                       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                        Text('$uid chiede ai locali', style: const TextStyle(fontWeight: FontWeight.w800)),
-                        if (c.data != null)
-                          Text('${c.data!.place} · modificatore di CD: ${m == 0 ? 'nessuno' : (m > 0 ? '+$m' : '−${-m}')}',
-                              style: const TextStyle(color: Pal.sub, fontSize: 12)),
+                        Text('$uid vuole ${SectorAction.label(kind).toLowerCase()} · CD ${r.data()['cd']}',
+                            style: const TextStyle(fontWeight: FontWeight.w800)),
+                        Text('${r.data()['place'] ?? ''}', style: const TextStyle(color: Pal.sub, fontSize: 12)),
                         const SizedBox(height: 4),
-                        Row(children: [
-                          Expanded(child: Text('Ha superato la CD?', style: const TextStyle(fontSize: 13))),
-                          TextButton(
-                            onPressed: _busy
-                                ? null
-                                : () => _run(() => TableService.answerLocals(_party!, r.id, uid, success: false),
-                                    ok: 'Risposta inviata a $uid'),
-                            child: const Text('No'),
-                          ),
-                          FilledButton(
-                            onPressed: _busy
-                                ? null
-                                : () => _run(() => TableService.answerLocals(_party!, r.id, uid, success: true),
-                                    ok: 'Risposta inviata a $uid'),
-                            child: const Text('Sì'),
-                          ),
-                        ]),
+                        answer(),
                       ]),
                     );
-                  },
-                ),
+                  }
+                  return FutureBuilder<LocalsCheck>(
+                    future: TableService.localsCheck(_party!, uid),
+                    builder: (context, c) {
+                      final m = c.data?.cdModifier ?? 0;
+                      return Padding(
+                        padding: const EdgeInsets.only(bottom: 10),
+                        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                          Text('$uid chiede ai locali', style: const TextStyle(fontWeight: FontWeight.w800)),
+                          if (c.data != null)
+                            Text('${c.data!.place} · modificatore di CD: ${m == 0 ? 'nessuno' : (m > 0 ? '+$m' : '−${-m}')}',
+                                style: const TextStyle(color: Pal.sub, fontSize: 12)),
+                          const SizedBox(height: 4),
+                          answer(),
+                        ]),
+                      );
+                    },
+                  );
+                }),
             ]),
           );
         },
@@ -986,6 +1064,7 @@ class _TableTabState extends State<TableTab> {
       {Map<String, dynamic>? st,
       List<Map<String, dynamic>> events = const [],
       String? me,
+      Map<String, dynamic>? user,
       }) {
     final z = pos == null ? null : zoneSpec('${pos['zone']}');
     final table = kTableMode && st != null && me != null;
@@ -1019,6 +1098,7 @@ class _TableTabState extends State<TableTab> {
           }),
           // eventi della tua zona (con le loro azioni)
           ..._eventCards(events, st, pos, me, onlyHere: true, inCard: true),
+          _zoneGym(pos!, st, user),
         ] else if (!kTableMode) ...[
           const SizedBox(height: 10),
           DropButton(

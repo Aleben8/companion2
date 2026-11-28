@@ -71,6 +71,33 @@ class BattleService {
     return min(hp, kBaseHp);
   }
 
+  /// Energie con cui il Pokémon entra in battaglia: quelle con cui è finito lo scontro precedente
+  /// (`currentEnergy`), piene se non ce ne sono o se era stato sconfitto (dopo il recupero riparte pieno).
+  static int startEnergy(Map<String, dynamic> pokemon) {
+    final hp = (pokemon['currentHp'] as num?)?.toInt();
+    final en = (pokemon['currentEnergy'] as num?)?.toInt();
+    if (en == null || (hp != null && hp <= 0)) return kBaseEnergy;
+    return en.clamp(0, kBaseEnergy);
+  }
+
+  /// Status alterato che il Pokémon si porta dietro (`currentStatus`: dot, slow, debuff con i turni rimasti).
+  /// Dopo una sconfitta (recupero) sparisce.
+  static Map<String, dynamic>? startStatus(Map<String, dynamic> pokemon) {
+    final hp = (pokemon['currentHp'] as num?)?.toInt();
+    final s = pokemon['currentStatus'];
+    if (s is! Map || (hp != null && hp <= 0)) return null;
+    return Map<String, dynamic>.from(s);
+  }
+
+  /// Nome leggibile di uno status alterato.
+  static String statusLabel(Map? s) => switch (s?['type']) {
+        'dot' => 'Avvelenato',
+        'slow' => 'Rallentato',
+        'debuff' => 'Indebolito',
+        null => '',
+        _ => '${s?['type']}',
+      };
+
   /// PS attuali fuori dalla battaglia. Con [ko] (sconfitto e ancora in recupero) sono 0.
   static int currentHp(Map<String, dynamic>? pokemon, {bool ko = false}) =>
       ko && ((pokemon?['currentHp'] as num?)?.toInt() ?? kBaseHp) <= 0 ? 0 : startHp(pokemon ?? const {});
@@ -102,13 +129,51 @@ class BattleService {
     });
   }
 
-  /// A fine scontro (vittoria, sconfitta, pareggio o fuga) i PS restano quelli finali.
+  /// Elisir (energie) e Antidoto (status alterato) dalla Borsa, fuori dalla battaglia.
+  /// Restituisce un breve testo con l'effetto.
+  static Future<String> useOutsideBattle({required String uid, required String pk, required ItemId item}) {
+    if (item != ItemId.elisir && item != ItemId.antidoto) throw Exception('Questo strumento si usa in battaglia');
+    final uref = ItemService.userRef(uid);
+    final pref = uref.collection('Pokemon').doc(pk);
+    return _db.runTransaction<String>((tx) async {
+      final u = (await tx.get(uref)).data() ?? {};
+      final p = (await tx.get(pref)).data() ?? {};
+      if (ItemService.isActive(u['koUntil'])) throw Exception('Il tuo Pokémon è esausto: serve un Revitalizzante');
+      final inv = ItemService.readInventory(u);
+      if ((inv[item.name] ?? 0) <= 0) throw Exception('Non hai più ${itemDef(item).name}');
+      final update = <String, dynamic>{};
+      late String msg;
+      if (item == ItemId.elisir) {
+        final en = startEnergy(p);
+        if (en >= kBaseEnergy) throw Exception('Il tuo Pokémon ha già tutte le energie');
+        final gained = min(kEnergyElixir, kBaseEnergy - en);
+        update['currentEnergy'] = en + gained;
+        msg = '⚡ +$gained energie';
+      } else {
+        if (startStatus(p) == null) throw Exception('Il tuo Pokémon non ha status alterati');
+        update['currentStatus'] = FieldValue.delete();
+        msg = 'Status alterato rimosso';
+      }
+      inv[item.name] = inv[item.name]! - 1;
+      tx.set(uref, {'inventory': inv}, SetOptions(merge: true));
+      tx.set(pref, update, SetOptions(merge: true));
+      return msg;
+    });
+  }
+
+  /// A fine scontro (vittoria, sconfitta, pareggio o fuga) PS, energie e status alterato restano
+  /// quelli finali e il Pokémon se li porta allo scontro successivo.
   static Future<void> _saveHp(Map? player) async {
     final uid = player?['uid'] as String?;
     final pk = player?['pokemon_doc_id'] as String?;
     if (uid == null || pk == null || uid.startsWith('gym:')) return;
+    final stato = player!['stato'];
     await _db.collection('Users').doc(uid).collection('Pokemon').doc(pk).set(
-      {'currentHp': _i(player!['current_hp']).clamp(0, _i(player['max_hp'], kBaseHp))},
+      {
+        'currentHp': _i(player['current_hp']).clamp(0, _i(player['max_hp'], kBaseHp)),
+        'currentEnergy': _i(player['current_energies'], kBaseEnergy).clamp(0, _i(player['max_energies'], kBaseEnergy)),
+        'currentStatus': stato is Map ? stato : FieldValue.delete(),
+      },
       SetOptions(merge: true),
     );
   }
@@ -126,8 +191,10 @@ class BattleService {
       'debolezze': list(d['Debolezze']),
       'current_hp': startHp(d),
       'max_hp': kBaseHp,
-      'current_energies': kBaseEnergy,
+      // energie e status restano tra uno scontro e l'altro (capipalestra e leggendari partono pieni)
+      'current_energies': startEnergy(d),
       'max_energies': kBaseEnergy,
+      if (startStatus(d) != null) 'stato': startStatus(d),
       'last_action': 'none',
       'turn_ready': false,
       'moveset_data': moves,
@@ -520,7 +587,13 @@ class BattleService {
       for (final k in ['playerA', 'playerB']) {
         final p = data[k] as Map?;
         if (p == null) continue;
-        await _saveHp({...p, 'current_hp': result.updates['$k.current_hp']});
+        final st = result.updates['$k.stato'];
+        await _saveHp({
+          ...p,
+          'current_hp': result.updates['$k.current_hp'],
+          'current_energies': result.updates['$k.current_energies'],
+          'stato': st is Map ? st : null,
+        });
       }
     }
 

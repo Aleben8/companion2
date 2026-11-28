@@ -307,8 +307,9 @@ const List<ItemDef> kItems = [
   ItemDef(
     ItemId.elisir,
     'Elisir',
-    'Il Pokémon recupera $kEnergyElixir energie. In battaglia richiede un turno.',
-    'Si usa in battaglia (richiede un turno).',
+    'Il Pokémon recupera $kEnergyElixir energie (le energie restano tra uno scontro e l\'altro). '
+        'In battaglia richiede un turno.',
+    'Si usa dalla borsa o in battaglia (richiede un turno).',
     [Color(0xFF3CA6D1), Color(0xFF8ADCF0)],
     category: ItemCategory.battaglia,
     price: 4,
@@ -330,8 +331,8 @@ const List<ItemDef> kItems = [
     ItemId.antidoto,
     'Antidoto',
     'Rimuove subito i danni nel tempo e gli altri status alterati (rallentamenti, malus) del tuo Pokémon. '
-        'In battaglia richiede un turno.',
-    'Si usa in battaglia (richiede un turno).',
+        'Gli status restano tra uno scontro e l\'altro finché non finiscono. In battaglia richiede un turno.',
+    'Si usa dalla borsa o in battaglia (richiede un turno).',
     [Color(0xFF59B36B), Color(0xFFA6E0B0)],
     category: ItemCategory.battaglia,
     price: 3,

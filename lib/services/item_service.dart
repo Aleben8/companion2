@@ -335,6 +335,14 @@ class ItemService {
   }
 
   /// Acquisto all'emporio.
+  /// Contrattare riuscito: sconto attivo fino alla fine della fase (o del turno) in cui è riuscito.
+  static bool bargainActive(Map<String, dynamic>? u) =>
+      kTableMode && TableClock.round > 0 && ((u?['bargainUntil'] as num?)?.toInt() ?? 0) >= TableClock.round;
+
+  /// Prezzo all'emporio per questo giocatore (con lo sconto di Contrattare, minimo 1).
+  static int priceFor(ItemDef def, Map<String, dynamic>? u) =>
+      bargainActive(u) ? max(1, def.price - kBargainDiscount) : def.price;
+
   static Future<void> buy(String uid, ItemId id) {
     final ref = userRef(uid);
     return _db.runTransaction<void>((tx) async {
@@ -342,10 +350,11 @@ class ItemService {
       if (!kTableMode) LiveService.assertNotBusy(u);
       final def = itemDef(id);
       final coins = coinsOf(u);
-      if (coins < def.price) throw Exception('Monete insufficienti (servono ${def.price} 🪙)');
+      final price = priceFor(def, u);
+      if (coins < price) throw Exception('Monete insufficienti (servono $price 🪙)');
       final inv = readInventory(u);
       if (!addItem(inv, id.name)) throw Exception('Borsa piena ($kBagLimit oggetti)');
-      tx.set(ref, {'inventory': inv, 'coins': coins - def.price}, SetOptions(merge: true));
+      tx.set(ref, {'inventory': inv, 'coins': coins - price}, SetOptions(merge: true));
     });
   }
 

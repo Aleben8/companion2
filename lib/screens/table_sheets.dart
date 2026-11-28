@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import '../services/item_service.dart';
 import '../services/table_service.dart';
 import '../table/phases.dart';
+import '../table/sectors.dart';
 import '../table/zones.dart';
 import '../theme.dart';
 import '../widgets/clue_search.dart';
@@ -249,6 +250,11 @@ class _ExploreSheetState extends State<_ExploreSheet> {
         );
       });
 
+  Future<void> _sectorAction(String id) => _run(() async {
+        final msg = await TableService.sectorAction(widget.party, widget.me, id);
+        if (mounted) snack(context, msg);
+      });
+
   Future<void> _locals() => _run(() async {
         await TableService.requestLocals(widget.party, widget.me);
         if (mounted) snack(context, 'Richiesta inviata al Master: ti dirà se hai superato la CD');
@@ -296,16 +302,39 @@ class _ExploreSheetState extends State<_ExploreSheet> {
             StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
               stream: TableService.watchLocalsRequests(widget.party),
               builder: (context, snap) {
+                // una prova alla volta: finché il Master non risponde le altre aspettano
                 final waiting = (snap.data?.docs ?? const []).any((d) => d.data()['uid'] == widget.me);
-                return _action(
-                  waiting ? 'Parla con i locali · in attesa del Master' : 'Parla con i locali',
-                  Icons.record_voice_over,
-                  Pal.gold,
-                  waiting ? null : block(ActKind.locals),
-                  waiting ? () {} : _locals,
-                  '1 azione: il Master ti chiede un tiro al tavolo; se superi la CD i locali ti raccontano '
-                  'chi è passato, gli eventi in arrivo e se c’è qualcosa di nascosto in zona.',
-                );
+                const waitText = 'in attesa del Master';
+                final pos = user['pos'] as Map?;
+                final type = pos == null ? null : TableLayout.typeOf('${pos['zone']}', _i(pos['sector']));
+                final here = [for (final id in SectorAction.all) if (SectorAction.allowed(id, type)) id];
+                return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+                  _action(
+                    'Parla con i locali',
+                    Icons.record_voice_over,
+                    Pal.gold,
+                    waiting ? waitText : block(ActKind.locals),
+                    _locals,
+                    '1 azione: il Master ti chiede un tiro al tavolo; se superi la CD i locali ti raccontano '
+                    'chi è passato, gli eventi in arrivo e se c’è qualcosa di nascosto in zona.',
+                  ),
+                  if (here.isNotEmpty) ...[
+                    const SizedBox(height: 18),
+                    Text('Azioni di questo settore${type == null ? '' : ' (${type.label.toLowerCase()})'}',
+                        style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w800)),
+                    for (final id in here)
+                      _action(
+                        SectorAction.needsCheck(id)
+                            ? '${SectorAction.label(id)} · ${SectorAction.fixedCd(id) == null ? 'CD dalle tracce' : 'CD ${SectorAction.fixedCd(id)}'}'
+                            : SectorAction.label(id),
+                        SectorAction.icon(id),
+                        const [Color(0xFF3F9F72), Color(0xFF8CD0A8)],
+                        SectorAction.needsCheck(id) && waiting ? waitText : block(id),
+                        () => _sectorAction(id),
+                        '1 azione. ${SectorAction.help(id)}',
+                      ),
+                  ],
+                ]);
               },
             ),
           ]);

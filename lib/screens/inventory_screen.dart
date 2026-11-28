@@ -171,11 +171,19 @@ class _InventoryTabState extends State<InventoryTab> {
           if (!await _confirm(item.name, 'Il tuo Pokémon recupera fino a ${item.id == ItemId.pozione ? kPotionHeal : kSuperPotionHeal} PS.')) break;
           final healed = await BattleService.healOutsideBattle(uid: _uid, pk: pk, item: item.id);
           if (mounted) snack(context, '💊 +$healed PS');
+        case ItemId.elisir:
+        case ItemId.antidoto:
+          // energie e status restano tra uno scontro e l'altro: si sistemano anche fuori dalla battaglia
+          final pk2 = context.read<Session>().pokemonId!;
+          if (!await _confirm(item.name,
+              item.id == ItemId.elisir ? 'Il tuo Pokémon recupera fino a $kEnergyElixir energie.' : 'Il tuo Pokémon perde lo status alterato.')) {
+            break;
+          }
+          final msg = await BattleService.useOutsideBattle(uid: _uid, pk: pk2, item: item.id);
+          if (mounted) snack(context, msg);
         case ItemId.biglietto:
         case ItemId.caramella:
         case ItemId.fune:
-        case ItemId.elisir:
-        case ItemId.antidoto:
         case ItemId.amuleto:
         case ItemId.guanto:
           if (mounted) snack(context, item.usage);
@@ -509,6 +517,5 @@ class ItemTile extends StatelessWidget {
 
 /// Strumenti che si usano solo in battaglia (Pozione e Super Pozione curano anche fuori).
 bool _battleOnly(ItemDef i) => const {
-      ItemId.caramella, ItemId.fune,
-      ItemId.elisir, ItemId.antidoto, ItemId.amuleto, ItemId.guanto,
+      ItemId.caramella, ItemId.fune, ItemId.amuleto, ItemId.guanto,
     }.contains(i.id);

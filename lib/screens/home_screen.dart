@@ -364,6 +364,18 @@ class _HpPillState extends State<_HpPill> {
                   child: LinearProgressIndicator(value: frac.clamp(0.0, 1.0), color: color, backgroundColor: Pal.line),
                 ),
               ),
+              // energie e status alterato: restano tra uno scontro e l'altro
+              if (!ko) ...[
+                const SizedBox(width: 8),
+                const Icon(Icons.bolt, size: 15, color: Color(0xFFE0A100)),
+                Text('${BattleService.startEnergy(pSnap.data!.data() ?? const {})}',
+                    style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 12)),
+                if (BattleService.startStatus(pSnap.data!.data() ?? const {}) != null) ...[
+                  const SizedBox(width: 6),
+                  Text(BattleService.statusLabel(BattleService.startStatus(pSnap.data!.data() ?? const {})),
+                      style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 11, color: Pal.bad)),
+                ],
+              ],
             ]),
           );
         },
