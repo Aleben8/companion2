@@ -22,6 +22,7 @@ import '../table/zones.dart';
 import 'shop_sheet.dart';
 import 'table_sheets.dart';
 import '../theme.dart';
+import '../widgets/abilities_card.dart';
 import '../widgets/common.dart';
 import '../widgets/drop.dart';
 import '../widgets/game_status.dart';
@@ -1099,6 +1100,7 @@ class _TableTabState extends State<TableTab> {
           // eventi della tua zona (con le loro azioni)
           ..._eventCards(events, st, pos, me, onlyHere: true, inCard: true),
           _zoneGym(pos!, st, user),
+          AbilitiesCard(compact: true, onBattle: widget.onBattle),
         ] else if (!kTableMode) ...[
           const SizedBox(height: 10),
           DropButton(

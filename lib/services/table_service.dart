@@ -11,6 +11,7 @@ import '../table/phases.dart';
 import '../table/sectors.dart';
 import '../table/type_chart.dart';
 import '../table/zones.dart';
+import 'ability_service.dart';
 import 'battle_service.dart';
 import 'clue_service.dart';
 import 'gym_service.dart';
@@ -152,7 +153,7 @@ class TableService {
     for (final d in (await trapsCol(party).get()).docs) {
       batch.delete(d.reference);
     }
-    for (final name in ['alarms', 'traces', 'trades', 'localsRequests']) {
+    for (final name in ['alarms', 'traces', 'trades', 'localsRequests', 'sectorEffects']) {
       for (final d in (await PartyService.party(party).collection(name).get()).docs) {
         batch.delete(d.reference);
       }
@@ -206,9 +207,15 @@ class TableService {
           'stealthUntil': FieldValue.delete(),
           'shield': FieldValue.delete(),
           'coins': kStartingCoins,
+          // abilità: badge della partita (lo storico `badges` resta) e stato delle abilità del Pokémon
+          'gameBadges': FieldValue.delete(),
+          'forcedBattle': FieldValue.delete(),
+          'ambush': FieldValue.delete(),
         },
         SetOptions(merge: true),
       );
+      final pk = await AbilityService.pokemonRef(uid);
+      if (pk != null) batch.set(pk, AbilityService.resetFields(), SetOptions(merge: true));
     }
     if (!manualEvents) {
       for (final e in _schedule()) {
@@ -331,7 +338,7 @@ class TableService {
     if (shrunk.isEmpty) return;
     final batch = _db.batch();
     // sottocollezioni con { zone, sector } (indizi: { place: { zone, sector } })
-    for (final name in ['traces', 'traps', 'alarms']) {
+    for (final name in ['traces', 'traps', 'alarms', 'sectorEffects']) {
       for (final d in (await PartyService.party(party).collection(name).get()).docs) {
         final z = d.data()['zone'], s = _i(d.data()['sector']);
         final max = shrunk[z];

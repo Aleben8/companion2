@@ -40,6 +40,8 @@ class ActKind {
   static const tracks = 'tracks'; // cercare tracce
   static const locals = 'locals'; // parlare con i locali
   static const forced = 'forced'; // eludere, fuggire: reazioni obbligate
+  static const ability = 'ability'; // usare un'abilità attiva del Pokémon (lib/abilities.dart)
+  static const item = 'item'; // usare uno strumento che costa un'azione (MT)
 
   static String label(String? k) => switch (k) {
         move => 'spostarti tra i settori',
@@ -47,6 +49,8 @@ class ActKind {
         search => 'cercare indizi',
         tracks => 'cercare tracce',
         locals => 'parlare con i locali',
+        ability => 'usare un’abilità',
+        item => 'usare uno strumento',
         // azioni di settore (lib/table/sectors.dart, SectorAction)
         'contrattare' => 'contrattare',
         'seguire' => 'seguire le tracce',

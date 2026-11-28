@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart';
 import '../constants.dart';
 import '../items.dart';
 import '../table/sectors.dart';
+import 'ability_service.dart';
 import 'gym_service.dart';
 import 'item_service.dart';
 import 'table_service.dart';
@@ -636,10 +637,22 @@ class BattleService {
             data['gymName'] as String,
             data['gymType'] as String,
           );
+          final parts = <String>[];
           if (isNew) {
-            final txt = await ItemService.grant(result.winnerUid!,
-                coins: kCoinsGymWin, items: [ItemService.randomDrop(rnd: _rnd)]);
-            await ref.update({'badgeEarned': data['gymName'], 'rewardText': txt, 'rewardFor': result.winnerUid});
+            parts.add(await ItemService.grant(result.winnerUid!,
+                coins: kCoinsGymWin, items: [ItemService.randomDrop(rnd: _rnd)]));
+          }
+          // badge della partita in corso: sblocca un'abilità del Pokémon (la prima volta in questa partita)
+          if (await GymService.awardGameBadge(result.winnerUid!, data['gymId'] as String)) {
+            final ab = await AbilityService.onBadge(result.winnerUid!);
+            if (ab != null) parts.add(ab);
+          }
+          if (parts.isNotEmpty) {
+            await ref.update({
+              if (isNew) 'badgeEarned': data['gymName'],
+              'rewardText': parts.join(' · '),
+              'rewardFor': result.winnerUid,
+            });
           }
         }
       }

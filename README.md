@@ -253,6 +253,39 @@ posizione, tempo e azioni. Codice: `lib/services/live_service.dart`, regole in f
 - **Emporio**: dentro una zona è quello della zona (Hub = mercato centrale), fuori dalle zone resta quello delle palestre.
 - **Nebbia**: il Radar non vede chi è (secondo il GPS) nella Giungla con la nebbia.
 
+## Abilità dei Pokémon
+
+Progetto completo (regole, tabella delle 54 abilità, note di bilanciamento) in [`abilita.md`](abilita.md). Le regole valgono
+identiche al tavolo e dal vivo: l'unità è il **giro** (al tavolo una fase del giorno, dal vivo `roundMinutes` minuti), lo
+stesso contatore (`state.round`) degli eventi di zona. Definizioni e regole in `lib/abilities.dart`, Firestore in
+`lib/services/ability_service.dart`, interfaccia in `lib/widgets/abilities_card.dart`.
+
+- **Ogni tipo ha 3 abilità**: 2 attive e 1 passiva (`kAbilities`, chiavi dei tipi come in `kTypes`, `Tipi` e
+  `PkmTypePrim`/`PkmTypeSec`). **Riserva** (`abilityPool`): tipo singolo = le 3 del suo tipo; tipo doppio = le 6 dei due tipi.
+  **Kit completo**: al massimo `kMaxActives` (2) attive e `kMaxPassives` (1) passiva.
+- **Sblocco con i badge della partita.** A ogni palestra vinta per la prima volta **in questa partita** (capopalestra di zona
+  al tavolo, palestra GPS dal vivo) la app estrae `kAbilityChoices` (2) abilità tra quelle ancora sbloccabili (rispettando il
+  kit massimo) e il giocatore ne sceglie una; se ne resta una sola si sblocca subito. Il **tipo singolo** sceglie tra 2 al 1º
+  badge e al 2º riceve insieme le due rimaste (`kMonoTypeFullKitBadges`); il tipo doppio completa il kit in 3 badge. La finestra
+  **Nuova abilità** (o **Hai sbloccato…**) resta in cima alla Home e alla tab Tavolo finché non scegli.
+- **Badge della partita**: `Users/{uid}.gameBadges` (lista delle palestre vinte in questa partita), aggiornato alla vittoria su
+  un capopalestra di zona o una palestra GPS. Si azzera a ogni avvio della partita (al tavolo "Nuova partita", dal vivo
+  "Avvia/Riavvia la partita"), insieme a monete, tracce e stato delle abilità. `Users/{uid}.badges` resta lo storico.
+- **Stato sul documento del Pokémon**: `abilities` (sbloccate), `abilityOffer` (le 2 in attesa di scelta), `abilityNotice`
+  ("Hai sbloccato…"), `abilityOfferNext` (badge vinti con una scelta già in sospeso), `abilityUsedRound` (chiave → giro
+  dell'ultimo uso), `abilityActiveUntil` / `abilityActiveKey` (effetto in corso).
+- **Uso delle attive**: al tavolo costa 1 azione (passa da `actBlock` come le altre azioni, tipo `ability`), dal vivo un'attesa
+  di `kLiveAbilityWaitMinutes` (1) minuto; quelle "di reazione" non costano nulla. Non si può usare se è in ricarica (giro
+  attuale − ultimo uso < ricarica: 2, 4 o 8 giri), se un'altra attiva è ancora in corso o se ne hai già usata una in questo
+  giro (`abilityBlock`).
+- **Dove**: nella Home (tab Statistiche, subito sotto PS ed energie) la scheda **Abilità** con i bottoni delle attive (grigi
+  con il motivo: "Pronta tra 2 giri", "Un'altra abilità è in corso"), le passive con il loro testo e gli slot vuoti
+  ("Si sblocca con il prossimo badge"); al tavolo gli stessi bottoni anche nella scheda "La tua posizione". Icone provvisorie:
+  quelle dei tipi.
+- **Effetti delle abilità sulla mappa**: `Party/{codice}/sectorEffects/{id}` → `{kind, zone, sector, owner, untilRound,
+  active}` (Gelata, Esca tossica, Rovi, Barricata, Sismo e gli altri effetti che gli altri devono "vedere"); si leggono negli
+  stessi punti di trappole, allarmi e settori bloccati e si cancellano a ogni nuova partita.
+
 ## Indizi sulla mappa (live e tavolo)
 
 Tab **Party**, scheda "Indizi sulla mappa" (piazzamento, indizi trovati e dichiarati). La **ricerca** sta nella sezione dei movimenti:
@@ -329,6 +362,9 @@ lib/
   screens/table_map.dart          mappa a pulsanti del Tavolo e pannello dei settori
   services/table_service.dart     turni, spostamenti, eventi, leggendario
   services/clue_service.dart      indizi: piazzamento, ricerca, dichiarazione
+  abilities.dart                  abilità dei Pokémon: le 54 definizioni e le regole (riserva, sblocco, ricariche)
+  services/ability_service.dart   abilità: sblocco con i badge, scelta, uso, effetti di settore
+  widgets/abilities_card.dart     finestra "Nuova abilità" e bottoni delle abilità
   widgets/clues_card.dart         scheda "Indizi sulla mappa" (tab Party)
   screens/table_tab.dart          tab Tavolo, barra dei turni, osservatore
   geo.dart                        distanza e direzione
@@ -490,7 +526,7 @@ Nota: la Biblioteca (Via Sacco 9) è dentro Palazzo Estense, accanto ai Giardini
 gruppo di amici; per un uso più intenso la loro politica richiede un fornitore di tile dedicato.
 
 Dati Firestore aggiunti: `Party/{codice}/gyms/{gymId}` (palestra + capopalestra), `Party/{codice}.gameStarted`,
-`Users/{uid}.badges`, e nelle battaglie `npc`, `gymId`, `badgeEarned`.
+`Users/{uid}.badges` (storico) e `Users/{uid}.gameBadges` (palestre vinte nella partita in corso, per le abilità), e nelle battaglie `npc`, `gymId`, `badgeEarned`.
 
 ## Differenze volute rispetto all'originale
 

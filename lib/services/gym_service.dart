@@ -168,4 +168,16 @@ class GymService {
     }, SetOptions(merge: true));
     return true;
   }
+
+  /// Badge della partita in corso (`Users/{uid}.gameBadges`, si azzera a ogni nuova partita): serve allo
+  /// sblocco delle abilità. Restituisce true se [gymId] è stata vinta per la prima volta in questa partita.
+  static Future<bool> awardGameBadge(String uid, String gymId) {
+    final ref = ItemService.userRef(uid);
+    return _db.runTransaction<bool>((tx) async {
+      final list = (await tx.get(ref)).data()?['gameBadges'];
+      if (list is List && list.contains(gymId)) return false;
+      tx.set(ref, {'gameBadges': FieldValue.arrayUnion([gymId])}, SetOptions(merge: true));
+      return true;
+    });
+  }
 }

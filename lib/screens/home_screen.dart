@@ -11,6 +11,7 @@ import '../services/item_service.dart';
 import '../services/mode_service.dart';
 import '../services/session.dart';
 import '../theme.dart';
+import '../widgets/abilities_card.dart';
 import '../widgets/badge_row.dart';
 import '../widgets/common.dart';
 import '../widgets/drop.dart';
@@ -111,9 +112,11 @@ class _HomeScreenState extends State<HomeScreen> {
                 const TableWatcher(), // turni al tavolo; orologio dei giri e zona GPS dal vivo
                 const TurnBar(),
                 const StatusBanner(),
+                // dopo una palestra vinta: la scelta della nuova abilità resta in cima finché non scegli
+                const AbilityOfferCard(),
                 const SizedBox(height: 8),
                 switch (_tab) {
-                  HomeTab.stats => _StatsPanel(pk: pk, color: color),
+                  HomeTab.stats => _StatsPanel(pk: pk, color: color, onBattle: _openBattle),
                   HomeTab.party => const PartyTab(),
                   HomeTab.battle => BattleTab(key: ValueKey(_openBattleId), initialBattleId: _openBattleId),
                   HomeTab.bag => const InventoryTab(),
@@ -447,7 +450,8 @@ class _Tabs extends StatelessWidget {
 class _StatsPanel extends StatelessWidget {
   final Map<String, dynamic> pk;
   final Color color;
-  const _StatsPanel({required this.pk, required this.color});
+  final ValueChanged<String> onBattle;
+  const _StatsPanel({required this.pk, required this.color, required this.onBattle});
 
   Widget _bar(int v, List<Color> cs) => LayoutBuilder(builder: (context, cons) {
         final w = cons.maxWidth * (v.clamp(0, kStatMax) / kStatMax);
@@ -519,6 +523,8 @@ class _StatsPanel extends StatelessWidget {
   Widget build(BuildContext context) {
     final c = [color, lighten(color, 0.4)];
     return Column(children: [
+      // abilità del Pokémon, subito sotto PS ed energie
+      AbilitiesCard(onBattle: onBattle),
       DropCard(
         colors: c,
         label: 'Statistiche',
