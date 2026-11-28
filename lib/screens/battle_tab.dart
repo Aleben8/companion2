@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
+import '../abilities.dart';
 import '../constants.dart';
 import '../items.dart';
 import '../services/battle_service.dart';
@@ -11,6 +12,7 @@ import '../services/session.dart';
 import '../theme.dart';
 import '../widgets/common.dart';
 import '../widgets/drop.dart';
+import '../widgets/game_popups.dart';
 
 /// Tab "Battaglia".
 ///
@@ -26,6 +28,15 @@ class BattleTab extends StatefulWidget {
   State<BattleTab> createState() => _BattleTabState();
 }
 
+/// Battaglia in corso nella tab: la Home la mostra come due strisce fissate in alto (vedi [BattleStripsHeader]).
+final ValueNotifier<String?> kActiveBattle = ValueNotifier<String?>(null);
+
+void _setActiveBattle(String? id) {
+  if (kActiveBattle.value == id) return;
+  // può cambiare durante il build: si aggiorna al frame successivo
+  WidgetsBinding.instance.addPostFrameCallback((_) => kActiveBattle.value = id);
+}
+
 class _BattleTabState extends State<BattleTab> {
   final _joinCtrl = TextEditingController();
   String? _battleId;
@@ -37,6 +48,7 @@ class _BattleTabState extends State<BattleTab> {
   String? _selMove;
   bool _sending = false;
   int _turnSeen = -1;
+  String? _liveSeen; // battaglia vista in corso: alla fine si apre il popup di vittoria o sconfitta
 
   Session get _s => context.read<Session>();
 
@@ -78,7 +90,14 @@ class _BattleTabState extends State<BattleTab> {
     if (mounted) setState(() => _busy = false);
   }
 
+  @override
+  void dispose() {
+    _setActiveBattle(null);
+    super.dispose();
+  }
+
   void _leave() => setState(() {
+        _setActiveBattle(null);
         _battleId = null;
         _selAction = null;
         _selMove = null;
@@ -304,6 +323,16 @@ class _BattleTabState extends State<BattleTab> {
     final status = d['status'] as String;
     final over = status != 'in_progress';
     final turn = (d['turn_number'] as num?)?.toInt() ?? 0;
+    _setActiveBattle(over ? null : _battleId); // strisce fisse in alto finché la lotta è in corso
+    if (!over) {
+      _liveSeen = _battleId;
+    } else if (_liveSeen == _battleId) {
+      _liveSeen = null;
+      final id = _battleId!;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) showBattleResultPopup(context, id, me);
+      });
+    }
 
     // Nuovo turno: la selezione riparte da zero.
     if (_turnSeen != turn) {
@@ -339,12 +368,25 @@ class _BattleTabState extends State<BattleTab> {
           oppReady: oppReady,
           oppLabel: oppLabel,
         ),
-        Combatant(player: opp, colors: oppColors, tag: oppLabel),
-        const Padding(
-          padding: EdgeInsets.symmetric(vertical: 2),
-          child: Text('VS', style: TextStyle(color: Pal.sub, fontWeight: FontWeight.w800, letterSpacing: 2)),
+        // mentre scegli l'azione i due combattenti si riducono a strisce (come la barra del Pokémon nella home);
+        // a ogni nuovo turno tornano grandi per vedere com'è andata
+        AnimatedCrossFade(
+          duration: const Duration(milliseconds: 280),
+          sizeCurve: Curves.easeInOut,
+          crossFadeState: !over && (chosenAction != null || mineReady || _sending)
+              ? CrossFadeState.showSecond
+              : CrossFadeState.showFirst,
+          firstChild: Column(children: [
+            Combatant(player: opp, colors: oppColors, tag: oppLabel),
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 2),
+              child: Text('VS', style: TextStyle(color: Pal.sub, fontWeight: FontWeight.w800, letterSpacing: 2)),
+            ),
+            Combatant(player: mine, colors: myColors, tag: 'Tu'),
+          ]),
+          // le strisce stanno fissate in alto nella Home (BattleStripsHeader)
+          secondChild: const SizedBox(width: double.infinity),
         ),
-        Combatant(player: mine, colors: myColors, tag: 'Tu'),
         _LogCard(log: (d['last_turn_log'] ?? '').toString(), turn: turn),
         if (over)
           _ResultCard(data: d, me: me, onNew: _leave)
@@ -629,6 +671,208 @@ class Combatant extends StatelessWidget {
   }
 }
 
+/// Le due strisce dei combattenti fissate in alto nella Home mentre la lotta è in corso.
+class BattleStripsHeader extends SliverPersistentHeaderDelegate {
+  final String battleId;
+  final String me;
+  final Color bg;
+  BattleStripsHeader({required this.battleId, required this.me, required this.bg});
+
+  static const double height = CombatantStrip.height + 8 + 6;
+
+  @override
+  double get maxExtent => height;
+  @override
+  double get minExtent => height;
+
+  @override
+  Widget build(BuildContext context, double shrinkOffset, bool overlapsContent) => Container(
+        // la fascia fissata deve occupare sempre la sua altezza (anche mentre la battaglia si carica)
+        height: height,
+        color: bg,
+        child: StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+          stream: BattleService.watch(battleId),
+          builder: (context, snap) {
+            final d = snap.data?.data();
+            if (d == null || d['playerA'] is! Map || d['playerB'] is! Map) return const SizedBox.shrink();
+            final myKey = (d['playerA'] as Map)['uid'] == me ? 'playerA' : 'playerB';
+            final oppKey = myKey == 'playerA' ? 'playerB' : 'playerA';
+            final opp = Map<String, dynamic>.from(d[oppKey] as Map);
+            // la tua è la barra del Pokémon qui sopra (BattleSelfBar): qui solo l'avversario
+            return Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 6),
+              child: CombatantStrip(
+                  player: opp, colors: typeColors(opp['type'] as String?), tag: d['npc'] == true ? 'Capopalestra' : 'Avversario'),
+            );
+          },
+        ),
+      );
+
+  @override
+  bool shouldRebuild(BattleStripsHeader old) => old.battleId != battleId || old.me != me || old.bg != bg;
+}
+
+/// Effetti positivi del combattente (strumenti dichiarati e abilità in campo), per l'icona "buff".
+List<String> _buffs(Map<String, dynamic> p) => [
+      if (p['candy'] == true) 'Caramella Rara: +$kCandyBonus ai tiri',
+      if (p['glove'] == true) 'Guanto: +$kGloveDamage al danno',
+      if (p['amulet'] == true) 'Amuleto: blocca il primo status',
+      for (final m in (p['mods'] as List? ?? const []))
+        if (abilityDef('$m') != null) '${abilityDef('$m')!.name}: ${abilityDef('$m')!.text}',
+    ];
+
+/// Combattente ridotto a striscia (fissa in alto durante la lotta): Pokémon, nome, PS e, per te, le energie;
+/// sotto, i buff e debuff attivi. La tua è la barra del Pokémon in cima alla Home (vedi [BattleSelfBar]).
+class CombatantStrip extends StatelessWidget {
+  final Map<String, dynamic> player;
+  final List<Color> colors;
+  final String tag;
+  final bool showEnergy;
+  final EdgeInsets margin;
+  const CombatantStrip({
+    super.key,
+    required this.player,
+    required this.colors,
+    required this.tag,
+    this.showEnergy = false,
+    this.margin = const EdgeInsets.symmetric(vertical: 4),
+  });
+
+  static const double height = 86;
+
+  Widget _pill(List<Widget> children) => Container(
+        margin: const EdgeInsets.only(left: 6),
+        padding: const EdgeInsets.fromLTRB(8, 5, 10, 5),
+        decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(20)),
+        child: Row(mainAxisSize: MainAxisSize.min, children: children),
+      );
+
+  /// Un buff o un debuff sotto la striscia: icona dedicata e testo breve (toccandolo, il dettaglio).
+  Widget _effect(bool buff, String short, String full) => Tooltip(
+        message: full,
+        triggerMode: TooltipTriggerMode.tap,
+        child: Container(
+          margin: const EdgeInsets.only(right: 6),
+          padding: const EdgeInsets.fromLTRB(4, 2, 8, 2),
+          decoration: BoxDecoration(color: Colors.white.withOpacity(0.9), borderRadius: BorderRadius.circular(12)),
+          child: Row(mainAxisSize: MainAxisSize.min, children: [
+            Image.asset(
+              buff ? 'assets/images/icons/buff.png' : 'assets/images/icons/debuff.png',
+              width: 16,
+              height: 16,
+              errorBuilder: (_, __, ___) =>
+                  Icon(buff ? Icons.trending_up : Icons.trending_down, size: 16, color: buff ? Pal.ok : Pal.bad),
+            ),
+            const SizedBox(width: 3),
+            Text(short, style: TextStyle(fontSize: 11, fontWeight: FontWeight.w800, color: buff ? Pal.ok : Pal.bad)),
+          ]),
+        ),
+      );
+
+  @override
+  Widget build(BuildContext context) {
+    final hp = (player['current_hp'] as num?)?.round() ?? 0;
+    final maxHp = (player['max_hp'] as num?)?.round() ?? kBaseHp;
+    final en = (player['current_energies'] as num?)?.round() ?? 0;
+    final maxEn = (player['max_energies'] as num?)?.round() ?? kBaseEnergy;
+    final stato = player['stato'] as Map?;
+    final name = (player['pokemon_name'] ?? '').toString();
+    final buffs = _buffs(player);
+    final frac = maxHp <= 0 ? 0.0 : hp / maxHp;
+    final hpColor = frac <= 0.25 ? Pal.bad : (frac <= 0.5 ? Pal.warn : Pal.ok);
+    final effects = <Widget>[
+      if (stato != null) _effect(false, Combatant._statoText(stato), Combatant._statoText(stato)),
+      for (final b in buffs) _effect(true, b.split(':').first, b),
+    ];
+    return Container(
+      margin: margin,
+      height: height,
+      padding: const EdgeInsets.fromLTRB(10, 6, 10, 6),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(colors: [colors.first, lighten(colors.last, 0.2)]),
+        borderRadius: BorderRadius.circular(18),
+        boxShadow: [BoxShadow(color: colors.first.withOpacity(0.3), blurRadius: 10, offset: const Offset(0, 4))],
+      ),
+      child: Column(children: [
+        Expanded(
+          child: Row(children: [
+            PokemonImage(name, size: 40),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Column(mainAxisAlignment: MainAxisAlignment.center, crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text(tag.toUpperCase(),
+                    style: TextStyle(color: Colors.white.withOpacity(0.8), fontSize: 10, fontWeight: FontWeight.w800, letterSpacing: 1)),
+                Text(name,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w800)),
+              ]),
+            ),
+            if (showEnergy)
+              _pill([
+                EnergyGlyph(height: 16, color: colors.first),
+                const SizedBox(width: 4),
+                Text('$en/$maxEn', style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 12)),
+              ]),
+            _pill([
+              Icon(Icons.favorite, size: 15, color: hpColor),
+              const SizedBox(width: 4),
+              Text('$hp/$maxHp', style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 12)),
+              const SizedBox(width: 6),
+              ClipRRect(
+                borderRadius: BorderRadius.circular(4),
+                child: SizedBox(
+                  width: 34,
+                  height: 6,
+                  child: LinearProgressIndicator(value: frac.clamp(0.0, 1.0), color: hpColor, backgroundColor: Pal.line),
+                ),
+              ),
+            ]),
+          ]),
+        ),
+        // buff e debuff attivi
+        SizedBox(
+          height: 22,
+          child: effects.isEmpty
+              ? Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text('Nessun effetto attivo',
+                      style: TextStyle(color: Colors.white.withOpacity(0.75), fontSize: 11, fontWeight: FontWeight.w600)),
+                )
+              : ListView(scrollDirection: Axis.horizontal, children: effects),
+        ),
+      ]),
+    );
+  }
+}
+
+/// La tua barra in cima alla Home durante la lotta: i valori della battaglia (PS, energie, buff e debuff),
+/// con il colore del giocatore.
+class BattleSelfBar extends StatelessWidget {
+  final String battleId;
+  final String me;
+  final Color color;
+  const BattleSelfBar({super.key, required this.battleId, required this.me, required this.color});
+
+  @override
+  Widget build(BuildContext context) => StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+        stream: BattleService.watch(battleId),
+        builder: (context, snap) {
+          final d = snap.data?.data();
+          if (d == null || d['playerA'] is! Map) return const SizedBox.shrink();
+          final myKey = (d['playerA'] as Map)['uid'] == me ? 'playerA' : 'playerB';
+          if (d[myKey] is! Map) return const SizedBox.shrink();
+          return CombatantStrip(
+            player: Map<String, dynamic>.from(d[myKey] as Map),
+            colors: [color, lighten(color, 0.3)],
+            tag: 'Tu',
+            showEnergy: true,
+            margin: EdgeInsets.zero,
+          );
+        },
+      );
+}
+
 /// Scheda mossa. Può essere selezionabile (in battaglia) o solo informativa.
 class MoveCard extends StatelessWidget {
   final Map<String, dynamic> move;
@@ -838,6 +1082,57 @@ class _LogCard extends StatelessWidget {
 }
 
 /// Esito dello scontro.
+/// Popup di fine lotta (vittoria, sconfitta, pareggio, fuga) con il premio; si può fissare sullo schermo.
+/// Il premio arriva un attimo dopo il risultato: il contenuto si aggiorna da solo.
+Future<void> showBattleResultPopup(BuildContext context, String battleId, String me) async {
+  final d = (await BattleService.battleRef(battleId).get()).data();
+  if (d == null || !context.mounted) return;
+  final r = _resultLook(d, me);
+  await showGamePopup(
+    context,
+    key: 'result:$battleId',
+    title: '${r.emoji} ${r.title}',
+    colors: r.colors,
+    content: (context, close) => StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+      stream: BattleService.watch(battleId),
+      builder: (context, snap) {
+        final data = snap.data?.data() ?? d;
+        final opp = (data['playerA'] as Map?)?['uid'] == me ? data['playerB'] : data['playerA'];
+        return Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: [
+          Text(data['gymName'] != null ? 'Contro ${data['gymName']}' : 'Contro ${(opp as Map?)?['pokemon_name'] ?? 'l’avversario'}',
+              style: const TextStyle(color: Pal.sub)),
+          if (data['badgeEarned'] != null) ...[
+            const SizedBox(height: 8),
+            InfoChip('🏅 Badge ottenuto: ${data['badgeEarned']}', color: const Color(0xFFD08A00)),
+          ],
+          if (data['rewardText'] != null && (data['rewardFor'] == null || data['rewardFor'] == me)) ...[
+            const SizedBox(height: 8),
+            InfoChip('🎁 ${data['rewardText']}', color: const Color(0xFFD08A00)),
+          ],
+          if (r.title == 'Sconfitta') ...[
+            const SizedBox(height: 8),
+            const Text('Il tuo Pokémon è esausto: aspetta il recupero o usa un Revitalizzante.', style: TextStyle(fontSize: 12)),
+          ],
+        ]);
+      },
+    ),
+  );
+}
+
+({String title, String emoji, List<Color> colors}) _resultLook(Map<String, dynamic> data, String me) {
+  final status = data['status'] as String?;
+  if (status == 'fled') {
+    return (
+      title: data['fledBy'] == me ? 'Sei fuggito!' : "L'avversario è fuggito!",
+      emoji: '🏃',
+      colors: const [Color(0xFFB5694F), Color(0xFFD9A07A)],
+    );
+  }
+  if (status == 'draw') return (title: 'Pareggio!', emoji: '🤝', colors: Pal.neutral);
+  if (data['winnerUid'] == me) return (title: 'Vittoria!', emoji: '🏆', colors: Pal.gold);
+  return (title: 'Sconfitta', emoji: '💤', colors: const [Color(0xFF6B6B80), Color(0xFFB0B0C0)]);
+}
+
 class _ResultCard extends StatelessWidget {
   final Map<String, dynamic> data;
   final String me;

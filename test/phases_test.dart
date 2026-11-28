@@ -55,4 +55,28 @@ void main() {
     expect(actBlock(state: st(actions: 5, last: 'x'), user: u, uid: 'ash', kind: ActKind.move), contains('2 azioni'));
     expect(actBlock(state: st(actions: 7, last: 'x'), user: u, uid: 'ash', kind: ActKind.move), isNull);
   });
+
+  test('azioni a testa: la fase passa quando tutti hanno usato le loro', () {
+    final st = {'started': true, 'round': 1, 'actionsPerPlayer': 2, 'order': ['ash', 'misty'], 'used': {'ash': 2, 'misty': 1}};
+    expect(actionsLeft(st, 'ash'), 0);
+    expect(actionsLeft(st, 'misty'), 1);
+    expect(waitingFor(st), ['misty']);
+    expect(actBlock(state: st, user: {}, uid: 'ash', kind: ActKind.search), contains('aspetta gli altri'));
+    // se gli altri hanno finito, "mai due volte di fila" non blocca
+    final solo = {...st, 'used': {'ash': 2, 'misty': 0}, 'lastUid': 'misty'};
+    expect(actBlock(state: solo, user: {}, uid: 'misty', kind: ActKind.search), isNull);
+    final done = settlePhase(st, 1, {'ash': 2, 'misty': 2}, {});
+    expect(done.round, 2);
+    expect(done.used, isEmpty);
+  });
+
+  test('azioni perse: contano come usate e passano alla fase dopo', () {
+    final st = {'started': true, 'round': 1, 'actionsPerPlayer': 2, 'order': ['ash', 'misty']};
+    // Trappola: ash perde 3 azioni con 2 a disposizione -> 2 ora, 1 nella fase dopo
+    final r = settlePhase(st, 1, {'misty': 2}, {'ash': 3});
+    expect(r.round, 2);
+    expect(r.lost, {'ash': 1});
+    expect(usedActions({...st, 'lost': r.lost}, 'ash'), 1);
+    expect(lostActions({...st, 'lost': {'ash': 1}}, 'ash'), 1);
+  });
 }

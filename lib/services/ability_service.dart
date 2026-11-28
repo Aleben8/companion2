@@ -179,10 +179,10 @@ class AbilityService {
   static Future<void> choose(String uid, String key) async {
     final ref = await pokemonRef(uid);
     if (ref == null) throw Exception('Nessun Pokémon');
-    await _db.runTransaction<void>((tx) async {
+    final ok = await _db.runTransaction<bool>((tx) async {
       final p = (await tx.get(ref)).data() ?? {};
       final offer = [for (final k in (p['abilityOffer'] as List? ?? const [])) '$k'];
-      if (!offer.contains(key)) throw Exception('Questa abilità non è tra quelle offerte');
+      if (!offer.contains(key)) return false;
       final after = {...p, 'abilities': [...unlockedAbilities(p), key]};
       final update = <String, dynamic>{
         'abilities': FieldValue.arrayUnion([key]),
@@ -200,7 +200,21 @@ class AbilityService {
         }
       }
       tx.set(ref, update, SetOptions(merge: true));
+      return true;
     });
+    if (!ok) throw Exception('Questa abilità non è più tra quelle offerte');
+  }
+
+  /// Perché, per le regole del tavolo o perché c'è qualcosa da risolvere, non puoi usare un'attiva adesso
+  /// (null = puoi). Le reazioni non costano azioni e non passano da actBlock.
+  static String? abilityActBlock(Map<String, dynamic>? st, Map<String, dynamic>? user, String uid, AbilityDef def) {
+    if (user?['wildEncounter'] is Map || user?['spotted'] is Map) return 'Prima risolvi quello che ti è successo';
+    if (!kTableMode) {
+      final d = LiveService.left(user?['busyUntil']);
+      return d == null ? null : 'In attesa: ${LiveService.fmt(d)}';
+    }
+    if (def.reaction || kTableTurns) return null;
+    return actBlock(state: st, user: user, uid: uid, kind: ActKind.ability);
   }
 
   /// Chiude la finestra "Hai sbloccato…".
@@ -237,6 +251,10 @@ class AbilityService {
     if (me['wildEncounter'] is Map) throw Exception('Prima affronta o sfuggi al Pokémon selvatico');
     if (me['spotted'] is Map) throw Exception('Ti hanno notato: prima elùdili (azione o Fune di fuga)');
     if (!kTableMode) LiveService.assertNotBusy(me);
+    // regole del tavolo (mai due volte di fila, fermo...): controllate qui, fuori dalle transazioni, perché sul web
+    // un errore lanciato dentro una transazione arriva come "Dart exception thrown from converted Future"
+    final rule = abilityActBlock(st, me, uid, def);
+    if (rule != null) throw Exception(rule);
     // bersaglio, settore, ingredienti: si controlla prima di pagare
     await _precheck(party: party, uid: uid, def: def, me: me, target: target, sector: sector, recipe: recipe);
 
@@ -248,16 +266,18 @@ class AbilityService {
         await ItemService.userRef(uid).set(LiveService.addBusy(me, kLiveAbilityWaitMinutes), SetOptions(merge: true));
       }
     }
-    await _db.runTransaction<void>((tx) async {
+    final again = await _db.runTransaction<String?>((tx) async {
       final cur = (await tx.get(pref)).data() ?? {};
-      final again = abilityBlock(cur, key, round);
-      if (again != null) throw Exception(again);
+      final why = abilityBlock(cur, key, round);
+      if (why != null) return why; // niente throw dentro la transazione (vedi sopra)
       tx.set(pref, {
         'abilityUsedRound': {key: round},
         if (def.effectRounds > 0) 'abilityActiveUntil': round + def.effectRounds - 1,
         if (def.effectRounds > 0) 'abilityActiveKey': key,
       }, SetOptions(merge: true));
+      return null;
     });
+    if (again != null) throw Exception(again);
     return _apply(party: party, uid: uid, def: def, me: me, round: round, target: target, sector: sector, recipe: recipe);
   }
 
@@ -291,7 +311,7 @@ class AbilityService {
       case Ab.spavento:
         if (target == null) throw Exception('Scegli un giocatore');
         if (!(await playersNear(party, uid)).contains(target)) throw Exception('$target non è nel tuo settore');
-        if (def.key == Ab.sfida) await _assertCanChallenge(party, uid, target);
+        if (def.key == Ab.sfida) await assertCanChallenge(party, uid, target);
       case Ab.sismo:
         if (sector == null || !(await quakeSectors(party, uid)).contains(sector)) throw Exception('Scegli un altro settore');
       case Ab.forgia:
@@ -476,9 +496,8 @@ class AbilityService {
     } else if (kTableTurns) {
       await ref.set({'actionPenalty': FieldValue.increment(1)}, SetOptions(merge: true));
     } else {
-      // fasi del giorno: fermo finché il gruppo non fa un'altra azione (si somma a un'attesa già in corso)
-      final group = await TableService.groupActions(party);
-      await ref.set({'waitUntilAction': max(group, _i(u?['waitUntilAction'])) + 1}, SetOptions(merge: true));
+      // fasi del giorno: perde un'azione (conta come usata)
+      await TableService.loseActions(party, target, 1);
     }
   }
 
@@ -685,7 +704,7 @@ class AbilityService {
   // ------------------------------------------------------------- sfide tra giocatori
 
   /// Sfida e Imboscata: niente rifugi, Repellente, Ibernazione o giocatori non disponibili.
-  static Future<void> _assertCanChallenge(String party, String uid, String target) async {
+  static Future<void> assertCanChallenge(String party, String uid, String target) async {
     await ItemService.assertCanFight(uid, opponentUid: target);
     await TableService.assertNotInRefuge(uid);
     await TableService.assertNotInRefuge(target, me: false);
@@ -696,7 +715,7 @@ class AbilityService {
 
   /// Lotta obbligata tra [uid] e [target] (Sfida, Imboscata): parte subito e il bersaglio non può rifiutare.
   static Future<String> challenge({required String party, required String uid, required String target, int firstTurnDice = 0}) async {
-    await _assertCanChallenge(party, uid, target);
+    await assertCanChallenge(party, uid, target);
     final id = await BattleService.createForcedBattle(party: party, uid: uid, target: target, firstTurnDice: firstTurnDice);
     await ItemService.userRef(target).set({'forcedBattle': {'id': id, 'by': uid}}, SetOptions(merge: true));
     await notice(party, [target], '⚔️ $uid ti ha sfidato: la lotta è iniziata!');

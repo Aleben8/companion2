@@ -46,21 +46,25 @@ Entrambe le modalità usano lo stesso progetto Firebase (`lib/firebase_options.d
 - La collezione `Tipi` esiste già; se mancasse, la app la crea all'avvio della partita.
 
 ### Come funziona il tavolo
-- **Fasi del giorno (niente turni).** Chiunque agisce quando vuole. Ogni N azioni fatte da **tutto il gruppo** si passa
-  alla fase successiva: 🌅 Mattina → ☀️ Pomeriggio → 🌇 Sera → 🌙 Notte → mattina del giorno dopo. N lo sceglie il Master a
-  "Nuova partita" (consigliato: giocatori + 1, cioè circa un'azione a testa per fase). Il "giro" del resto del regolamento
-  **è la fase**: gli eventi si annunciano per fase ("nel pomeriggio", "fino a stasera", "domani mattina") e al cambio di fase
-  avanzano gli eventi e chi è in un rifugio recupera PS. Regole per agire (`lib/table/phases.dart`, `actBlock`):
-  1. **mai due volte di fila**: dopo una tua azione deve agire qualcun altro;
-  2. **mai due azioni uguali di fila** (es. "cerca" dopo "cerca"); gli **spostamenti tra settori della stessa zona sono
-     liberi**: quante volte vuoi, pagando le azioni;
+- **Fasi del giorno (niente turni).** Chiunque agisce quando vuole. Ogni giocatore ha **N azioni per fase** (le sceglie il
+  Master a "Nuova partita", di base `kDefaultActionsPerPlayer` = 2) e la fase passa alla successiva quando **tutti** le hanno
+  usate: 🌅 Mattina → ☀️ Pomeriggio → 🌇 Sera → 🌙 Notte → mattina del giorno dopo. Il "giro" del resto del regolamento **è la
+  fase**: gli eventi si annunciano per fase ("nel pomeriggio", "fino a stasera") e al cambio di fase avanzano gli eventi e chi
+  è in un rifugio recupera PS. Le **azioni perse** (Trappola: 2; eruzione: 1; Spavento: 1) contano come usate: prima quelle che
+  restano nella fase, poi quelle della fase dopo (la Fune di fuga contro la Trappola te le restituisce). Chi non vuole fare
+  nulla **sta fermo**: è un'azione e recupera `kWaitHp` (3) PS e `kWaitEnergy` (2) energie. Regole per agire
+  (`lib/table/phases.dart`, `actBlock`):
+  1. **mai due volte di fila**: dopo una tua azione deve agire qualcun altro, se qualcun altro ha ancora azioni in questa fase;
+  2. **mai due azioni uguali di fila** (es. "cerca" dopo "cerca"); gli **spostamenti tra settori della stessa zona** e lo
+     **stare fermo** sono liberi;
   3. **cambi di zona**: al massimo 2 al giorno e distanziati: se cambi zona la sera, la notte e la mattina dopo no, dal
      pomeriggio sì (`kZoneMovesPerDay`, `kZoneMoveGap`);
-  4. chi è **fermo** (Trappola: finché il gruppo non fa altre 2 azioni; eventi che fanno perdere azioni) aspetta.
-  Le azioni che costano di più (settore impervio, eventi) contano doppio per il gruppo. Eludere chi ti ha notato e fuggire
-  dal selvatico contano per il gruppo ma non per le regole 1 e 2. La **Clessidra** ti fa agire subito una volta, anche di
-  fila. La scheda in cima alla tab Tavolo dice giorno, fase, quante azioni mancano alla prossima e se puoi agire (e perché no).
-  Stato: `state.actions`, `phaseActions`, `lastUid`; per giocatore `lastKind`, `zoneMoves`, `waitUntilAction`, `freeAction`.
+  4. le azioni costano quello che costano (settore impervio, eventi): servono abbastanza azioni rimaste nella fase.
+  Eludere chi ti ha notato è una reazione: se non hai più azioni, la perdi nella fase dopo. La **Clessidra** ti fa agire
+  subito una volta, anche di fila. La scheda in cima alla tab Tavolo dice giorno, fase, le tue azioni (in rosso quelle perse),
+  chi deve ancora agire e se puoi agire (e perché no).
+  Stato: `state.actionsPerPlayer`, `used` e `lost` (per giocatore, questa fase), `actions` (contatore del gruppo), `lastUid`;
+  per giocatore `lastKind`, `zoneMoves`, `freeAction`, `priority`.
 - **Per tornare ai turni** basta mettere `kTableTurns = true` in `lib/table/phases.dart`: ordine casuale, 2 azioni a turno con
   un numero DISPARI di giocatori e 3 con un numero PARI (`kActionsOdd`/`kActionsEven`), "Fine turno", il giro avanza quando
   tutti hanno giocato.
@@ -202,10 +206,15 @@ Quando ti sposti in un settore dove ci sono altri giocatori la app tira **d20 + 
 - **CD** = 10 + modificatore del settore + **percezione** del più attento nel settore (Difesa Speciale × 0,5, per ora);
 - modificatori del settore: cittadino −2 (folla), selvaggio −1 e impervio −1 (ripari), rifugio +2, passaggio +1.
 
-Se riesci non succede nulla (e non sai se c'era qualcuno). Se fallisci, chi è nel settore riceve **subito** l'avviso
-"Hai notato X entrare nel tuo settore" (a comparsa e nella scheda **Avvistamenti** della tab Tavolo, che mostra questo giro e
-il precedente), e a te compare la scheda **"Ti hanno notato!"**: non puoi muoverti né cercare finché non eludi, con **1 azione**
-(se non ne hai, la perdi al turno dopo) o con una **Fune di fuga**. Con il Passo felpato attivo nessuno ti nota. Solo al tavolo. Costanti in `lib/table/sectors.dart` (`kStealthBaseCd`, `kDexterityMultiplier`,
+Se riesci non succede nulla (e non sai se c'era qualcuno: non arriva nessun avviso). Se fallisci, chi è nel settore riceve
+l'avviso "Hai notato X entrare nel tuo settore" e a te si apre il popup **"Ti hanno notato!"** (anche come scheda nella tab
+Tavolo): non puoi muoverti né cercare finché non decidi. **Decidi tu per primo**:
+- **Eludi** (1 azione; con i turni, se non ne hai, la perdi al turno dopo): resti nel settore ma ti nascondi, e chi ti ha
+  notato perde l'occasione;
+- **Fune di fuga**: scappi in un altro settore libero della zona, a scelta (nessuno vede dove);
+- **Resta allo scoperto**: chi ti ha notato ottiene la **priorità** e gli si apre il popup "Hai notato X!": può sfidarti
+  (lotta obbligata, 1 azione), usare un'abilità o uno strumento, anche se ha appena agito, oppure lasciar stare. La priorità
+  scade dopo `kPriorityActions` (2) azioni del gruppo (`Users/{uid}.priority`, regola in `actBlock`). Con il Passo felpato attivo nessuno ti nota. Solo al tavolo. Costanti in `lib/table/sectors.dart` (`kStealthBaseCd`, `kDexterityMultiplier`,
 `kPerceptionMultiplier`, `kEludeCost`), codice in `TableService._checkSpotted` / `elude`.
 
 ### Tracce e informazioni dai locali
@@ -266,8 +275,9 @@ stesso contatore (`state.round`) degli eventi di zona. Definizioni e regole in `
 - **Sblocco con i badge della partita.** A ogni palestra vinta per la prima volta **in questa partita** (capopalestra di zona
   al tavolo, palestra GPS dal vivo) la app estrae `kAbilityChoices` (2) abilità tra quelle ancora sbloccabili (rispettando il
   kit massimo) e il giocatore ne sceglie una; se ne resta una sola si sblocca subito. Il **tipo singolo** sceglie tra 2 al 1º
-  badge e al 2º riceve insieme le due rimaste (`kMonoTypeFullKitBadges`); il tipo doppio completa il kit in 3 badge. La finestra
-  **Nuova abilità** (o **Hai sbloccato…**) resta in cima alla Home e alla tab Tavolo finché non scegli.
+  badge e al 2º riceve insieme le due rimaste (`kMonoTypeFullKitBadges`); il tipo doppio completa il kit in 3 badge. Appena arriva
+  il badge (anche alla fine della lotta col capopalestra) si apre il popup **Nuova abilità** (o **Hai sbloccato…**); se lo
+  chiudi, la scheda resta in cima alla Home e alla tab Tavolo finché non scegli.
 - **Badge della partita**: `Users/{uid}.gameBadges` (lista delle palestre vinte in questa partita), aggiornato alla vittoria su
   un capopalestra di zona o una palestra GPS. Si azzera a ogni avvio della partita (al tavolo "Nuova partita", dal vivo
   "Avvia/Riavvia la partita"), insieme a monete, tracce e stato delle abilità. `Users/{uid}.badges` resta lo storico.
@@ -298,7 +308,7 @@ Al tavolo "+1 azione" si paga nello spostamento, dal vivo diventa `kLiveEnterWai
 | **Tracce** (`ItemService.addTrace`, `moveTo`) | **Pioggia** (tracce della zona a forza 1 e per 1 giro niente bonus Fuoco degli eventi; dal vivo le tracce di ricerca ora hanno anche la zona), **Svanire** (nessuna traccia), **Correnti ascensionali** (il primo ingresso in una zona a ogni giro non lascia traccia: `Users/{uid}.updraftRound`), **Rovi** (traccia di forza 3, anche con il Passo felpato). |
 | **Ricerca, strumenti, emporio, monete** | **Racimolare** (+3 monete), **Scavo** (50% di uno strumento, non è un "Cerca"), **Distrazione** (per 1 giro nel tuo settore gli altri non cercano indizi), **Forgia** (una ricetta con 1 solo ingrediente; per Pozione + Elisir scegli quale dare), **Fortuna** (25% di un secondo strumento uguale: Cerca, Scavo, indizio dichiarato, PvP, selvatici, eventi, leggendario, palestre; mai la MT; `ItemService.luckyDrops`), **Cliente abituale** (−1 moneta a ogni acquisto, si somma a Contrattare, minimo 1: `priceFor`), **Lega** (borsa da 14: `ItemService.bagLimit`), **Borseggio** (uno strumento a caso, MT esclusa, da un giocatore a caso nel tuo settore), **Benedizione** (+10 PS e niente status a te e a chi è nel tuo settore), **Idratazione**, **Sintesi**, **Fotosintesi** (+2 PS a ogni nuovo giro, tavolo e dal vivo). |
 | **Trappole e Allarmi** | **Attraversamuri** (non scattano su di te, tavolo e dal vivo), **Sonda** (disattiva nel tuo settore Trappole, Allarmi, Gelata ed Esca tossica degli altri e dice di chi erano; dal vivo usa il settore GPS di ogni trappola). |
-| **Sfide tra giocatori** | **Sfida** (lotta obbligata con un giocatore del tuo settore: `BattleService.createForcedBattle`, al bersaglio arriva la scheda "Sei stato sfidato!"), **Imboscata** (chi entra nel tuo settore fa comparire la scheda **Imboscata** con il bottone *Sfida*: non costa azioni, +2 al dado nel primo turno; `Users/{uid}.ambush`), **Ibernazione** (per 1 giro nessuna lotta tra giocatori per te, +5 PS), **Spavento** (il bersaglio perde 1 azione; dal vivo 2 minuti). |
+| **Sfide tra giocatori** | **Sfida** (lotta obbligata con un giocatore del tuo settore: `BattleService.createForcedBattle`, al bersaglio si apre il popup "Sei stato sfidato!"), **Imboscata** (chi entra nel tuo settore fa aprire il popup **Imboscata** con il bottone *Sfida*: non costa azioni, +2 al dado nel primo turno; `Users/{uid}.ambush`), **Ibernazione** (per 1 giro nessuna lotta tra giocatori per te, +5 PS), **Spavento** (il bersaglio perde 1 azione; dal vivo 2 minuti). |
 | **Selvatici** | **Nido** (fuga gratis, 50% di strumento vincendo). |
 
 Gli avvisi segreti (Gelata, Vedetta, Mente lucida, Imboscata, Borseggio, Spavento, Benedizione, Sfida) sono eventi
@@ -431,6 +441,7 @@ lib/
   abilities.dart                  abilità dei Pokémon: le 54 definizioni e le regole (riserva, sblocco, ricariche)
   services/ability_service.dart   abilità: sblocco con i badge, scelta, uso, effetti di settore
   widgets/abilities_card.dart     finestra "Nuova abilità" e bottoni delle abilità
+  widgets/game_popups.dart        popup di gioco (avvistamenti, priorità, sfide, cambio di fase, esito della lotta), fissabili
   widgets/clues_card.dart         scheda "Indizi sulla mappa" (tab Party)
   screens/table_tab.dart          tab Tavolo, barra dei turni, osservatore
   geo.dart                        distanza e direzione
@@ -477,11 +488,24 @@ Per cambiare lo stile dell'intera app basta toccare questi due file.
 2. *Attesa*: dopo la conferma le altre opzioni si sbiadiscono, la tua resta evidenziata e la sezione sotto mostra "Scelta inviata"
    e se l'avversario ha già scelto. In alto due indicatori mostrano chi ha scelto.
 3. *Risoluzione*: quando entrambi sono pronti compare "Risoluzione del turno…", poi il resoconto e le barre PS si animano.
-Le mosse senza energia sono sbiadite con il motivo scritto. Caramella Rara e Fune di fuga restano a uso immediato.
+Le mosse senza energia sono sbiadite con il motivo scritto.
+
+**Battaglia: strisce in alto.** A inizio turno si vedono le schede grandi dei due combattenti; mentre scegli le mosse si
+rimpiccioliscono e l'avversario diventa una **striscia fissata in alto** (resta visibile scorrendo: `BattleStripsHeader`,
+`CombatantStrip` in `screens/battle_tab.dart`) con PS e l'effetto attivo (icona `assets/images/icons/buff.png` /
+`debuff.png`). Il tuo Pokémon non ha una striscia: la barra in alto della Home diventa più spessa (`BattleSelfBar`) e mostra
+PS, le tue energie e sotto il buff/debuff attivo. A fine lotta si apre il popup di **vittoria** o **sconfitta**. Caramella Rara e Fune di fuga restano a uso immediato.
 La selezione non sposta le schede: il bordo ha spessore fisso e l'evidenziazione è un anello esterno (ombra), che non occupa spazio.
 
 **Energia.** Ogni punto di energia è il glifo angolare `assets/images/energy_full.png` (pieno) o `energy_empty.png` (vuoto),
 tinto del colore del tipo. Per cambiarlo basta sostituire quei due PNG (sfondo trasparente, forma nera); il widget è `EnergyPips` in `widgets/drop.dart`.
+
+**Popup di gioco.** Gli eventi che chiedono una scelta o vanno notati si aprono come popup (`widgets/game_popups.dart`,
+`GamePopupsWatcher`): "Ti hanno notato!" (Eludi / Fune di fuga / Resta allo scoperto), "Hai notato X!" (la priorità:
+sfida, abilità, strumenti, lascia stare), "Sei stato sfidato!", Imboscata, cambio di fase del giorno (con gli eventi della
+fase), vittoria o sconfitta, nuova abilità. Ogni popup ha **📌 Fissa sullo schermo**: resta come scheda in cima alla Home finché non la
+togli (solo per questa sessione); "Chiudi" lo chiude e non si riapre. Al cambio di fase la scheda della fase precedente si
+toglie da sola.
 
 **Home.** Cinque pulsanti: Statistiche, Party, Battaglia, Borsa, Mappa.
 

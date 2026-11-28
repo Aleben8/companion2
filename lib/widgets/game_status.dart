@@ -248,7 +248,7 @@ class _GameWatcherState extends State<GameWatcher> {
       if (data['type'] == 'spotted') {
         if ((data['to'] as List? ?? const []).contains(_uid) && mounted) {
           snack(context, '👀 Hai notato ${data['uid']} entrare nel tuo settore '
-              '(${zoneSpec('${data['zone']}').name}, settore ${data['sector']}): si è allontanato in fretta');
+              '(${zoneSpec('${data['zone']}').name}, settore ${data['sector']}): vediamo se prova a nascondersi…');
         }
         continue;
       }

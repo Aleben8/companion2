@@ -81,6 +81,10 @@ const int kStealthBaseCd = 10;
 const double kDexterityMultiplier = 0.5; // destrezza = Velocità × 0.5
 const double kPerceptionMultiplier = 0.5; // percezione = Difesa Speciale × 0.5
 const int kEludeCost = 1; // se ti notano: 1 azione per eludere (oppure una Fune di fuga)
+/// Chi ti nota ha la priorità: la sua prossima azione (sfidarti, un'abilità, uno strumento...) ignora le regole di
+/// turno e finché può reagire tu non puoi eludere. La priorità scade dopo che il gruppo fa altre N azioni.
+const int kPriorityActions = 2;
+const int kPriorityChallengeCost = 1; // ingaggiare chi hai notato costa 1 azione (con la priorità)
 
 int dexterityBonus(int speed) => (speed * kDexterityMultiplier).floor();
 int perceptionBonus(int spDef) => (spDef * kPerceptionMultiplier).floor();

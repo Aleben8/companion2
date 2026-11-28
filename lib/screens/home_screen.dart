@@ -15,6 +15,7 @@ import '../widgets/abilities_card.dart';
 import '../widgets/badge_row.dart';
 import '../widgets/common.dart';
 import '../widgets/drop.dart';
+import '../widgets/game_popups.dart';
 import '../widgets/game_status.dart';
 import 'battle_tab.dart';
 import 'gyms_screen.dart';
@@ -87,21 +88,42 @@ class _HomeScreenState extends State<HomeScreen> {
         slivers: [
           const SliverToBoxAdapter(child: ZoneEventsStrip()),
           // copertina aperta solo in Statistiche: nelle altre sezioni si ritira (animata) come scorrendo
-          TweenAnimationBuilder<double>(
-            tween: Tween(end: _tab == HomeTab.stats ? 1.0 : 0.0),
-            duration: const Duration(milliseconds: 320),
-            curve: Curves.easeInOut,
-            builder: (context, open, _) => SliverPersistentHeader(
-              pinned: true,
-              delegate: _HeroHeader(
-                hero: _Hero(color: color, name: name, prim: prim, sec: sec, level: level),
-                name: name,
-                color: color,
-                bg: Theme.of(context).scaffoldBackgroundColor,
-                open: open,
+          ValueListenableBuilder<String?>(
+            // in battaglia la barra del Pokémon mostra i valori della lotta (più spessa, con buff e debuff)
+            valueListenable: kActiveBattle,
+            builder: (context, battle, _) => TweenAnimationBuilder<double>(
+              tween: Tween(end: _tab == HomeTab.stats ? 1.0 : 0.0),
+              duration: const Duration(milliseconds: 320),
+              curve: Curves.easeInOut,
+              builder: (context, open, _) => SliverPersistentHeader(
+                pinned: true,
+                delegate: _HeroHeader(
+                  hero: _Hero(color: color, name: name, prim: prim, sec: sec, level: level),
+                  name: name,
+                  color: color,
+                  bg: Theme.of(context).scaffoldBackgroundColor,
+                  open: open,
+                  battleId: _tab == HomeTab.battle ? battle : null,
+                  me: s.userName!,
+                ),
               ),
             ),
           ),
+          // in battaglia: le strisce dei due combattenti restano fisse in alto
+          if (_tab == HomeTab.battle)
+            ValueListenableBuilder<String?>(
+              valueListenable: kActiveBattle,
+              builder: (context, id, _) => id == null
+                  ? const SliverToBoxAdapter(child: SizedBox.shrink())
+                  : SliverPersistentHeader(
+                      pinned: true,
+                      delegate: BattleStripsHeader(
+                        battleId: id,
+                        me: s.userName!,
+                        bg: Theme.of(context).scaffoldBackgroundColor,
+                      ),
+                    ),
+            ),
           SliverToBoxAdapter(
             child: Padding(
               // spazio sotto per non finire coperti dal menu di vetro
@@ -114,7 +136,9 @@ class _HomeScreenState extends State<HomeScreen> {
                 const StatusBanner(),
                 // dopo una palestra vinta: la scelta della nuova abilità resta in cima finché non scegli
                 const AbilityOfferCard(),
-                AbilityAlerts(onBattle: _openBattle),
+                // eventi di gioco come popup (avvistamenti, sfide, fasi del giorno) e le schede che hai fissato
+                GamePopupsWatcher(onBattle: _openBattle),
+                const PinnedPopups(),
                 const SizedBox(height: 8),
                 switch (_tab) {
                   HomeTab.stats => _StatsPanel(pk: pk, color: color, onBattle: _openBattle),
@@ -173,10 +197,20 @@ class _HeroHeader extends SliverPersistentHeaderDelegate {
   final Color color; // colore scelto dal giocatore
   final Color bg;
   final double open; // 1 = copertina aperta (Statistiche), 0 = solo la barra (altre sezioni)
-  _HeroHeader({required this.hero, required this.name, required this.color, required this.bg, this.open = 1});
+  final String? battleId; // lotta in corso: la barra mostra PS, energie, buff e debuff della battaglia
+  final String me;
+  _HeroHeader({
+    required this.hero,
+    required this.name,
+    required this.color,
+    required this.bg,
+    this.open = 1,
+    this.battleId,
+    this.me = '',
+  });
 
   static const double _max = 352; // copertina (340) + margine sopra
-  static const double _min = 64;
+  double get _min => battleId == null ? 64 : CombatantStrip.height + 14;
 
   @override
   double get maxExtent => _min + (_max - _min) * open;
@@ -186,7 +220,7 @@ class _HeroHeader extends SliverPersistentHeaderDelegate {
   @override
   Widget build(BuildContext context, double shrinkOffset, bool overlapsContent) {
     // quanto è chiusa (0 = copertina intera, 1 = solo barra), per scorrimento o perché la sezione la ritira
-    final extent = (maxExtent - shrinkOffset).clamp(_min, _max);
+    final extent = (maxExtent - shrinkOffset).clamp(_min, _max).toDouble();
     final t = (1 - (extent - _min) / (_max - _min)).clamp(0.0, 1.0);
     final bar = ((t - 0.6) / 0.4).clamp(0.0, 1.0);
     return Stack(clipBehavior: Clip.hardEdge, children: [
@@ -204,7 +238,12 @@ class _HeroHeader extends SliverPersistentHeaderDelegate {
             opacity: bar,
             child: ColoredBox(
               color: bg,
-              child: Container(
+              child: battleId != null
+                  ? Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 8, 16, 6),
+                      child: BattleSelfBar(battleId: battleId!, me: me, color: color),
+                    )
+                  : Container(
                 margin: const EdgeInsets.fromLTRB(16, 8, 16, 6),
                 padding: const EdgeInsets.symmetric(horizontal: 10),
                 decoration: BoxDecoration(
@@ -231,7 +270,8 @@ class _HeroHeader extends SliverPersistentHeaderDelegate {
   }
 
   @override
-  bool shouldRebuild(_HeroHeader old) => old.name != name || old.color != color || old.bg != bg || old.hero != hero || old.open != open;
+  bool shouldRebuild(_HeroHeader old) =>
+      old.name != name || old.color != color || old.bg != bg || old.hero != hero || old.open != open || old.battleId != battleId;
 }
 
 /// Copertina con il Pokémon sul colore identificativo del giocatore.

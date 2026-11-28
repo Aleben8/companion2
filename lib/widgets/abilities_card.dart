@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -79,6 +81,93 @@ class AbilityOfferCard extends StatefulWidget {
 
 class _AbilityOfferCardState extends State<AbilityOfferCard> {
   bool _busy = false;
+  StreamSubscription? _sub;
+  String? _shown; // ultima offerta/notifica già mostrata nel popup (una volta sola)
+  bool _open = false;
+
+  @override
+  void initState() {
+    super.initState();
+    final s = context.read<Session>();
+    // appena arriva una nuova offerta (fine della lotta in palestra) si apre il popup di scelta
+    _sub = AbilityService.watchPokemon(s.userName!, s.pokemonId!).listen((pk) {
+      final offer = [for (final k in (pk?['abilityOffer'] as List? ?? const [])) '$k'];
+      final notice = [for (final k in (pk?['abilityNotice'] as List? ?? const [])) '$k'];
+      if (offer.isEmpty && notice.isEmpty) return;
+      final key = offer.isNotEmpty ? 'o:${offer.join(',')}' : 'n:${notice.join(',')}';
+      if (key == _shown || _open) return;
+      _shown = key;
+      WidgetsBinding.instance.addPostFrameCallback((_) => _popup(s.userName!, offer, notice));
+    });
+  }
+
+  @override
+  void dispose() {
+    _sub?.cancel();
+    super.dispose();
+  }
+
+  /// Popup "Nuova abilità" (o "Hai sbloccato…"). Se lo chiudi senza scegliere resta la scheda in cima.
+  Future<void> _popup(String uid, List<String> offerKeys, List<String> noticeKeys) async {
+    if (!mounted) return;
+    final offer = [for (final k in offerKeys) if (abilityDef(k) != null) abilityDef(k)!];
+    final notice = [for (final k in noticeKeys) if (abilityDef(k) != null) abilityDef(k)!];
+    _open = true;
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(offer.isNotEmpty ? 'Nuova abilità!' : 'Hai sbloccato…'),
+        content: SingleChildScrollView(
+          child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+            if (offer.isNotEmpty)
+              const Text('Hai vinto un badge: scegli una delle due abilità per il tuo Pokémon.',
+                  style: TextStyle(color: Pal.sub, fontSize: 12)),
+            for (final d in offer.isNotEmpty ? offer : notice)
+              Container(
+                margin: const EdgeInsets.only(top: 10),
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(color: typeColors(d.type).first, width: 1.5),
+                ),
+                child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+                  AbilityTile(d),
+                  if (offer.isNotEmpty) ...[
+                    const SizedBox(height: 8),
+                    DropButton(
+                      label: 'Scegli ${d.name}',
+                      colors: typeColors(d.type),
+                      height: 40,
+                      onTap: () async {
+                        Navigator.pop(ctx);
+                        await _run(() async {
+                          await AbilityService.choose(uid, d.key);
+                          if (mounted) snack(context, 'Hai scelto ${d.name}');
+                        });
+                      },
+                    ),
+                  ],
+                ]),
+              ),
+          ]),
+        ),
+        actions: [
+          if (offer.isNotEmpty)
+            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Più tardi'))
+          else
+            FilledButton(
+              onPressed: () {
+                Navigator.pop(ctx);
+                _run(() => AbilityService.dismissNotice(uid));
+              },
+              child: const Text('Ok'),
+            ),
+        ],
+      ),
+    );
+    _open = false;
+  }
 
   Future<void> _run(Future<void> Function() f) async {
     setState(() => _busy = true);
@@ -243,7 +332,8 @@ class _AbilitiesCardState extends State<AbilitiesCard> {
       }
     } on _Cancel {
       // annullato: nessun costo
-    } catch (e) {
+    } catch (e, st) {
+      debugPrint('Abilità ${d.key}: errore $e\n$st');
       if (mounted) snack(context, _err(e), error: true);
     }
     if (mounted) setState(() => _busy = false);
@@ -267,7 +357,13 @@ class _AbilitiesCardState extends State<AbilitiesCard> {
       );
 
   @override
-  Widget build(BuildContext context) => _AbilityLive(builder: (context, pk, party, st) {
+  Widget build(BuildContext context) => StreamBuilder<Map<String, dynamic>>(
+      // regole del tavolo per agire (mai due volte di fila, fermo...) e attese dal vivo
+      stream: ItemService.watchUserFields(context.read<Session>().userName!, const [
+        'lastKind', 'waitUntilAction', 'zoneMoves', 'freeAction', 'wildEncounter', 'spotted', 'busyUntil', 'priority',
+      ]),
+      builder: (context, uSnap) => _AbilityLive(builder: (context, pk, party, st) {
+        final me = context.read<Session>().userName!;
         final started = st?['started'] == true;
         final round = _i(st?['round']);
         final have = [for (final k in unlockedAbilities(pk)) abilityDef(k)!];
@@ -279,7 +375,9 @@ class _AbilitiesCardState extends State<AbilitiesCard> {
         final body = Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
           for (final d in actives)
             Builder(builder: (_) {
-              final block = !started || party == null ? 'La partita non è ancora iniziata' : abilityBlock(pk, d.key, round);
+              final block = !started || party == null
+                  ? 'La partita non è ancora iniziata'
+                  : abilityBlock(pk, d.key, round) ?? AbilityService.abilityActBlock(st, uSnap.data, me, d);
               final running = activeAbility(pk, round) == d.key;
               return Padding(
                 padding: const EdgeInsets.only(top: 8),
@@ -342,106 +440,9 @@ class _AbilitiesCardState extends State<AbilitiesCard> {
                 ])
               : body,
         );
-      });
+      }));
 }
 
 class _Cancel implements Exception {
   const _Cancel();
-}
-
-/// Cose da fare subito per le abilità: l'Imboscata è scattata (bottone Sfida, non costa azioni) oppure
-/// qualcuno ti ha sfidato con Sfida/Imboscata (la lotta è già iniziata: non puoi rifiutare).
-class AbilityAlerts extends StatefulWidget {
-  final ValueChanged<String> onBattle;
-  const AbilityAlerts({super.key, required this.onBattle});
-  @override
-  State<AbilityAlerts> createState() => _AbilityAlertsState();
-}
-
-class _AbilityAlertsState extends State<AbilityAlerts> {
-  bool _busy = false;
-
-  Future<void> _run(Future<void> Function() f) async {
-    setState(() => _busy = true);
-    try {
-      await f();
-    } catch (e) {
-      if (mounted) snack(context, _err(e), error: true);
-    }
-    if (mounted) setState(() => _busy = false);
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final uid = context.read<Session>().userName!;
-    return StreamBuilder<Map<String, dynamic>>(
-      stream: ItemService.watchUserFields(uid, const ['ambush', 'forcedBattle', 'actualParty']),
-      builder: (context, snap) {
-        final u = snap.data;
-        final ambush = u?['ambush'] as Map?;
-        final forced = u?['forcedBattle'] as Map?;
-        final party = u?['actualParty'] as String?;
-        return Column(children: [
-          if (forced != null)
-            DropCard(
-              colors: typeColors('Lotta'),
-              label: 'Sei stato sfidato!',
-              labelOnTop: true,
-              child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-                Text('${forced['by']} ti ha sfidato: la lotta è già iniziata e non puoi rifiutare.'),
-                const SizedBox(height: 8),
-                DropButton(
-                  label: 'Vai alla lotta',
-                  icon: Icons.sports_mma,
-                  colors: typeColors('Lotta'),
-                  height: 44,
-                  busy: _busy,
-                  onTap: () => _run(() async {
-                    await AbilityService.dismissForcedBattle(uid);
-                    widget.onBattle('${forced['id']}');
-                  }),
-                ),
-              ]),
-            ),
-          if (ambush != null && party != null)
-            DropCard(
-              colors: typeColors('Buio'),
-              label: 'Imboscata',
-              labelOnTop: true,
-              child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-                Text('${ambush['target']} è arrivato nel tuo settore '
-                    '(${zoneSpec('${ambush['zone']}').name}). Puoi sfidarlo subito con +$kAmbushDice al dado nel primo turno: '
-                    'non può rifiutare e non costa azioni.'),
-                const SizedBox(height: 8),
-                Row(children: [
-                  Expanded(
-                    child: DropButton(
-                      label: 'Sfida',
-                      icon: Icons.sports_mma,
-                      colors: typeColors('Buio'),
-                      height: 44,
-                      busy: _busy,
-                      onTap: () => _run(() async {
-                        final id = await AbilityService.ambushChallenge(party, uid);
-                        widget.onBattle(id);
-                      }),
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: DropButton(
-                      label: 'Lascia stare',
-                      colors: Pal.neutral,
-                      height: 44,
-                      busy: _busy,
-                      onTap: () => _run(() => AbilityService.dismissAmbush(uid)),
-                    ),
-                  ),
-                ]),
-              ]),
-            ),
-        ]);
-      },
-    );
-  }
 }

@@ -177,12 +177,24 @@ class ItemService {
       });
 
   /// Fune di fuga contro la Trappola: annulla il blocco.
-  static Future<void> useRopeOnTrap(String uid) => _consume(uid, ItemId.fune, effect: (u) {
+  /// Al tavolo con le fasi del giorno la Trappola ti fa perdere azioni: la Fune te le restituisce.
+  static Future<void> useRopeOnTrap(String uid) async {
+    if (kTableMode && !kTableTurns) {
+      final party = await PartyService.actualParty(uid);
+      if (party == null) throw Exception('Entra prima in un party');
+      final st = (await TableService.stateRef(party).get()).data();
+      final u = (await userRef(uid).get()).data();
+      if (lostActions(st, uid) <= 0 && !isWaiting(u)) throw Exception('Non sei in una trappola');
+      if ((readInventory(u)['fune'] ?? 0) <= 0) throw Exception('Non hai Funi di fuga');
+      await _consume(uid, ItemId.fune, effect: (_) => {'waitUntilAction': FieldValue.delete()});
+      await TableService.recoverLostActions(party, uid);
+      return;
+    }
+    return _useRopeOnTrapOld(uid);
+  }
+
+  static Future<void> _useRopeOnTrapOld(String uid) => _consume(uid, ItemId.fune, effect: (u) {
         if (kTableMode) {
-          if (!kTableTurns) {
-            if (!isWaiting(u)) throw Exception('Non sei in una trappola');
-            return {'waitUntilAction': FieldValue.delete()};
-          }
           if (((u['trappedSkip'] as num?) ?? 0) <= 0) throw Exception('Non sei in una trappola');
           return {'trappedSkip': 0};
         }

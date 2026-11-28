@@ -24,7 +24,7 @@ int _i(dynamic v) => v is num ? v.toInt() : 0;
 /// Campi di `Users/{uid}` che servono al Tavolo e ai suoi pannelli.
 const List<String> kTableUserFields = [
   'pos', 'shield', 'busyUntil', 'searchReadyAt', 'wildEncounter', 'spotted', 'inventory', 'localsInfo',
-  'ticketReturn', 'lastKind', 'waitUntilAction', 'zoneMoves', 'freeAction',
+  'ticketReturn', 'lastKind', 'waitUntilAction', 'zoneMoves', 'freeAction', 'priority',
 ];
 
 /// Perché [me] non può fare un'azione di tipo [kind] adesso (null = può): con le fasi del giorno

@@ -93,8 +93,8 @@ class TableService {
   /// In entrambi i casi gli eventi di zona vengono pianificati.
   /// Al tavolo [biomes] sono le zone in gioco scelte dal Master (l'Hub c'è sempre; null = estrazione
   /// automatica) e i settori sono quelli impostati per il party.
-  /// [phaseActions]: al tavolo senza turni, quante azioni del gruppo fanno una fase del giorno.
-  static Future<void> startGame(String party, {bool manualEvents = false, List<String>? biomes, int? phaseActions}) async {
+  /// [actionsPerPlayer]: al tavolo senza turni, quante azioni ha ogni giocatore in una fase del giorno.
+  static Future<void> startGame(String party, {bool manualEvents = false, List<String>? biomes, int? actionsPerPlayer}) async {
     final live = !kTableMode;
     final players = await PartyService.players(party).get();
     if (players.docs.length < 2) throw Exception('Servono almeno 2 giocatori nel party');
@@ -164,7 +164,11 @@ class TableService {
       'round': 1,
       // fasi del giorno (tavolo senza turni): azioni del gruppo, azioni per fase, chi ha agito per ultimo
       'actions': 0,
-      'phaseActions': (phaseActions ?? suggestedPhaseActions(order.length)).clamp(kMinPhaseActions, kMaxPhaseActions),
+      // azioni a testa per fase: la fase cambia quando tutti le hanno usate (used/lost per giocatore)
+      'actionsPerPlayer': (actionsPerPlayer ?? kDefaultActionsPerPlayer).clamp(kMinActionsPerPlayer, kMaxActionsPerPlayer),
+      'used': <String, int>{},
+      'lost': <String, int>{},
+      'phaseActions': FieldValue.delete(),
       'lastUid': null,
       'order': order,
       'idx': 0,
@@ -651,29 +655,57 @@ class TableService {
         }
       });
     }
+    // controlli prima della transazione: sul web un errore lanciato lì dentro arriva illeggibile
+    {
+      final s0 = (await ref.get()).data();
+      final u0 = (await ItemService.userRef(uid).get()).data();
+      final why = actBlock(state: s0, user: u0, uid: uid, kind: kind);
+      if (why != null) throw Exception(why);
+      final left = actionsLeft(s0, uid);
+      if (kind != ActKind.forced && s0?['order'] is List && left < cost) {
+        throw Exception('Servono $cost azioni: in questa fase te ne ${left == 1 ? 'resta 1' : 'restano $left'}');
+      }
+    }
     var from = 0, to = 0;
-    await _db.runTransaction<void>((tx) async {
+    final err = await _db.runTransaction<String?>((tx) async {
       final s = (await tx.get(ref)).data();
       final uref = ItemService.userRef(uid);
       final u = (await tx.get(uref)).data();
       final why = actBlock(state: s, user: u, uid: uid, kind: kind);
-      if (why != null) throw Exception(why);
-      final actions = _i(s!['actions']) + cost;
+      if (why != null) return why;
+      final left = actionsLeft(s, uid);
+      if (kind != ActKind.forced && s!['order'] is List && left < cost) return 'Non hai abbastanza azioni in questa fase';
+      final used = {for (final e in ((s!['used'] as Map?) ?? const {}).entries) '${e.key}': _i(e.value)};
+      final lost = {for (final e in ((s['lost'] as Map?) ?? const {}).entries) '${e.key}': _i(e.value)};
+      // reazioni obbligate senza azioni rimaste: si perdono nella fase dopo
+      final take = kind == ActKind.forced ? min(cost, left) : cost;
+      used[uid] = (used[uid] ?? 0) + take;
+      if (cost > take) lost[uid] = (lost[uid] ?? 0) + cost - take;
       from = _i(s['round'], 1);
-      to = max(from, roundAfter(actions, _i(s['phaseActions'], 4)));
-      tx.update(ref, {'actions': actions, 'lastUid': uid, 'round': to});
+      final settled = s['order'] is List ? settlePhase(s, from, used, lost) : (round: from, used: used, lost: lost);
+      to = settled.round;
+      tx.update(ref, {
+        'actions': _i(s['actions']) + cost,
+        'lastUid': uid,
+        'round': to,
+        'used': settled.used,
+        'lost': settled.lost,
+      });
       tx.set(
         uref,
         {
           if (setPos != null) 'pos': setPos,
           if (kind != ActKind.forced) 'lastKind': kind,
           if (kind != ActKind.forced) 'freeAction': FieldValue.delete(),
+          if (kind != ActKind.forced) 'priority': FieldValue.delete(), // la priorità vale per una sola azione
           if (kind == ActKind.zone) 'zoneMoves': FieldValue.arrayUnion([from]),
           if (kind == ActKind.zone) 'zoneSince': from, // capipalestra: serve restare una fase intera
         },
         SetOptions(merge: true),
       );
+      return null;
     });
+    if (err != null) throw Exception(err);
     for (var r = from + 1; r <= to; r++) {
       await _newPhase(party, r);
     }
@@ -687,6 +719,49 @@ class TableService {
       await _refugeRest(party, p.id);
       await AbilityService.photosynthesis(p.id);
     }
+  }
+
+  /// [uid] perde [n] azioni (Trappola, eventi, Spavento): contano come usate in questa fase e, se non bastano
+  /// quelle rimaste, nella prossima. Se così tutti hanno finito, la fase passa.
+  static Future<void> loseActions(String party, String uid, int n) async {
+    if (n <= 0) return;
+    final ref = stateRef(party);
+    var from = 0, to = 0;
+    await _db.runTransaction<void>((tx) async {
+      final s = (await tx.get(ref)).data();
+      if (s == null || s['started'] != true) return;
+      final used = {for (final e in ((s['used'] as Map?) ?? const {}).entries) '${e.key}': _i(e.value)};
+      final lost = {for (final e in ((s['lost'] as Map?) ?? const {}).entries) '${e.key}': _i(e.value)};
+      lost[uid] = (lost[uid] ?? 0) + n;
+      from = _i(s['round'], 1);
+      final settled = s['order'] is List ? settlePhase(s, from, used, lost) : (round: from, used: used, lost: lost);
+      to = settled.round;
+      tx.update(ref, {'round': to, 'used': settled.used, 'lost': settled.lost});
+    });
+    for (var r = from + 1; r <= to; r++) {
+      await _newPhase(party, r);
+    }
+  }
+
+  /// Fune di fuga contro la Trappola (fasi del giorno): ti restituisce le azioni perse.
+  static Future<void> recoverLostActions(String party, String uid) =>
+      stateRef(party).update({'lost.$uid': FieldValue.delete()});
+
+  /// "Stai fermo" (1 azione): non fai nulla, ma recuperi [kWaitHp] PS e [kWaitEnergy] energie.
+  static Future<String> waitInPlace(String party, String uid) async {
+    final me = (await ItemService.userRef(uid).get()).data();
+    if (me?['wildEncounter'] is Map) throw Exception('Prima affronta o sfuggi al Pokémon selvatico');
+    if (me?['spotted'] is Map) throw Exception('Ti hanno notato: prima decidi cosa fare');
+    await _spend(party, uid, 1, kind: ActKind.wait);
+    if (ItemService.isActive(me?['koUntil'])) return 'Sei rimasto fermo (il tuo Pokémon è esausto: niente recupero)';
+    final pk = await activePokemon(uid, me);
+    if (pk == null) return 'Sei rimasto fermo';
+    final pref = ItemService.userRef(uid).collection('Pokemon').doc(pk);
+    final p = (await pref.get()).data() ?? {};
+    final hp = BattleService.currentHp(p), en = BattleService.startEnergy(p);
+    final nh = min(kBaseHp, hp + kWaitHp), ne = min(kBaseEnergy, en + kWaitEnergy);
+    await pref.set({'currentHp': nh, 'currentEnergy': ne}, SetOptions(merge: true));
+    return 'Sei rimasto fermo: +${nh - hp} PS, +${ne - en} energie';
   }
 
   /// Azioni del gruppo finora (per chi deve aspettare: Trappola, eventi).
@@ -1000,6 +1075,21 @@ class TableService {
     await ItemService.userRef(uid).set({
       'spotted': {'zone': zone, 'sector': sector, 'by': others, 'roll': roll, 'total': total, 'cd': cd},
     }, SetOptions(merge: true));
+    // chi ti ha notato ha la priorità: può reagire per primo (sfida, abilità, strumento...)
+    final group = _i((await stateRef(party).get()).data()?['actions']);
+    for (final o in others) {
+      await ItemService.userRef(o).set({
+        // in sospeso: chi è entrato decide per primo se eludere o fuggire (vedi elude / face)
+        'priority': {
+          'target': uid,
+          'zone': zone,
+          'sector': sector,
+          'round': TableClock.round,
+          'pending': true,
+          'untilAction': group + kPriorityActions,
+        }, // quando vale, la prossima azione ignora "mai due volte di fila" (vedi actBlock)
+      }, SetOptions(merge: true));
+    }
     // avviso subito a chi è nel settore (a comparsa in GameWatcher e nella scheda "Avvistamenti")
     await PartyService.party(party).collection('events').add({
       'type': 'spotted',
@@ -1020,19 +1110,34 @@ class TableService {
 
   /// Eludere chi ti ha notato (è già stato avvisato): con un'azione (se non ne hai più, la perdi al
   /// turno dopo) oppure con una Fune di fuga ([rope]).
-  static Future<void> elude(String party, String uid, {bool rope = false}) async {
+  /// Chi entra e viene notato decide **per primo** (prima che chi l'ha notato possa reagire):
+  ///  - eludere ([kEludeCost] azione): resta nel settore ma si nasconde; chi l'ha notato perde l'occasione;
+  ///  - Fune di fuga ([rope]): scappa in un altro settore della zona ([toSector]); nessuno vede dove;
+  ///  - affrontarlo ([face]): resta allo scoperto e chi l'ha notato ottiene la priorità.
+  static Future<void> elude(String party, String uid, {bool rope = false, int? toSector}) async {
     final uref = ItemService.userRef(uid);
-    final sp = (await uref.get()).data()?['spotted'];
+    final me = (await uref.get()).data();
+    final sp = me?['spotted'];
     if (sp is! Map) throw Exception('Nessuno ti ha notato');
     if (rope) {
+      final pos = me!['pos'] as Map;
+      if (toSector == null || !(await escapeSectors(party, uid)).contains(toSector)) {
+        throw Exception('Scegli un altro settore libero della zona');
+      }
+      if ((ItemService.readInventory(me)['fune'] ?? 0) <= 0) throw Exception('Non hai Funi di fuga');
       await ItemService.consume(uid, ItemId.fune);
-      await uref.set({'spotted': FieldValue.delete()}, SetOptions(merge: true));
+      await uref.set({'spotted': FieldValue.delete(), 'pos': {'zone': pos['zone'], 'sector': toSector}}, SetOptions(merge: true));
+      await _releaseSpotters(party, uid, 'è fuggito con una Fune di fuga');
       return;
     }
     if (!kTableTurns) {
+      // controllo fuori dalla transazione (sul web gli errori lì dentro arrivano illeggibili)
+      final why = actBlock(state: (await stateRef(party).get()).data(), user: me, uid: uid, kind: ActKind.forced);
+      if (why != null) throw Exception(why);
       // reazione obbligata: conta per il gruppo, ma non per "mai due volte di fila"
       await _spend(party, uid, kEludeCost, kind: ActKind.forced);
       await uref.set({'spotted': FieldValue.delete()}, SetOptions(merge: true));
+      await _releaseSpotters(party, uid, 'si è nascosto: lo hai perso di vista');
       return;
     }
     final st = (await stateRef(party).get()).data();
@@ -1044,7 +1149,85 @@ class TableService {
       await uref.set({'spotted': FieldValue.delete(), 'actionPenalty': FieldValue.increment(kEludeCost)},
           SetOptions(merge: true));
     }
+    await _releaseSpotters(party, uid, 'si è nascosto: lo hai perso di vista');
   }
+
+  /// Chi è stato notato resta allo scoperto: chi l'ha notato ottiene adesso la priorità per reagire.
+  static Future<void> face(String party, String uid) async {
+    final uref = ItemService.userRef(uid);
+    if ((await uref.get()).data()?['spotted'] is! Map) throw Exception('Nessuno ti ha notato');
+    await uref.set({'spotted': FieldValue.delete()}, SetOptions(merge: true));
+    final group = await groupActions(party);
+    final told = <String>[];
+    for (final p in (await PartyService.players(party).get()).docs) {
+      final u = (await ItemService.userRef(p.id).get()).data();
+      final pr = u?['priority'];
+      if (pr is! Map || pr['target'] != uid || pr['pending'] != true) continue;
+      await ItemService.userRef(p.id).set({
+        'priority': {...Map<String, dynamic>.from(pr), 'pending': false, 'untilAction': group + kPriorityActions},
+      }, SetOptions(merge: true));
+      told.add(p.id);
+    }
+    if (told.isNotEmpty) await AbilityService.notice(party, told, '👀 $uid non si è nascosto: hai la priorità, tocca a te');
+  }
+
+  /// Chi ha notato [uid] perde l'occasione (è sfuggito): via la priorità, e un avviso.
+  static Future<void> _releaseSpotters(String party, String uid, String what) async {
+    final told = <String>[];
+    for (final p in (await PartyService.players(party).get()).docs) {
+      final u = (await ItemService.userRef(p.id).get()).data();
+      final pr = u?['priority'];
+      if (pr is! Map || pr['target'] != uid) continue;
+      await ItemService.userRef(p.id).set({'priority': FieldValue.delete()}, SetOptions(merge: true));
+      told.add(p.id);
+    }
+    if (told.isNotEmpty) await AbilityService.notice(party, told, '💨 $uid $what');
+  }
+
+  /// Dove si può scappare con la Fune di fuga: gli altri settori della tua zona non bloccati.
+  static Future<List<int>> escapeSectors(String party, String uid) async {
+    await loadLayout(party);
+    final me = (await ItemService.userRef(uid).get()).data();
+    final pos = me?['pos'] as Map?;
+    if (pos == null) return const [];
+    final zone = '${pos['zone']}';
+    final blocked = blockedSectors(await activeEvents(party), zone, mob: await AbilityService.mobility(party, uid, me));
+    return [
+      for (var s = 1; s <= TableLayout.count(zone); s++)
+        if (s != _i(pos['sector']) && !blocked.contains(s)) s,
+    ];
+  }
+
+  /// La priorità di chi ti ha notato è ancora valida? (scade dopo [kPriorityActions] azioni del gruppo)
+  static bool priorityValid(Map<String, dynamic>? user, {int? groupActions}) {
+    final p = user?['priority'];
+    if (p is! Map || p['pending'] == true) return false; // chi è entrato sta ancora decidendo
+    return (groupActions ?? TableClock.actions) < _i(p['untilAction']);
+  }
+
+  /// Con la priorità: ingaggi in una sfida chi hai notato entrare (non può rifiutare; rifugi, Repellente e
+  /// Ibernazione valgono sempre). Costa [kPriorityChallengeCost] azione, che ignora le regole di turno.
+  static Future<String> priorityChallenge(String party, String uid) async {
+    final me = (await ItemService.userRef(uid).get()).data();
+    if (!priorityValid(me, groupActions: await groupActions(party))) throw Exception('Non hai più la priorità');
+    final p = me!['priority'] as Map;
+    final target = '${p['target']}';
+    final tpos = (await ItemService.userRef(target).get()).data()?['pos'] as Map?;
+    if (tpos?['zone'] != p['zone'] || _i(tpos?['sector']) != _i(p['sector'])) throw Exception('$target se n’è già andato');
+    // controlli prima di pagare (fuori dalle transazioni: sul web gli errori lì dentro arrivano illeggibili)
+    final why = actBlock(state: (await stateRef(party).get()).data(), user: me, uid: uid, kind: ActKind.challenge);
+    if (why != null) throw Exception(why);
+    await AbilityService.assertCanChallenge(party, uid, target);
+    await _spend(party, uid, kPriorityChallengeCost, kind: ActKind.challenge);
+    final id = await AbilityService.challenge(party: party, uid: uid, target: target);
+    // l'incontro si risolve con la lotta: chi è entrato non deve più eludere
+    await ItemService.userRef(target).set({'spotted': FieldValue.delete()}, SetOptions(merge: true));
+    return id;
+  }
+
+  /// Lascia perdere chi hai notato: la priorità finisce e chi è entrato può eludere.
+  static Future<void> dropPriority(String uid) => ItemService.userRef(uid)
+      .set({'priority': FieldValue.delete()}, SetOptions(merge: true));
 
   // ------------------------------------------------- informazioni dai locali
 
@@ -1489,18 +1672,15 @@ class TableService {
       if (t.data()['ownerUid'] == uid) continue;
       final hit = await _db.runTransaction<bool>((tx) async {
         final d = (await tx.get(t.reference)).data();
-        final st = (await tx.get(stateRef(party))).data(); // letto prima di scrivere (regola delle transazioni)
         if (d == null || d['active'] != true) return false;
         tx.update(t.reference, {'active': false, 'triggeredBy': uid});
         if (kTableTurns) {
           tx.set(ItemService.userRef(uid), {'trappedSkip': FieldValue.increment(1)}, SetOptions(merge: true));
-        } else {
-          // fermo finché il gruppo non fa altre kTrapWaitActions azioni
-          tx.set(ItemService.userRef(uid), {'waitUntilAction': _i(st?['actions']) + kTrapWaitActions},
-              SetOptions(merge: true));
         }
         return true;
       });
+      // fasi del giorno: perdi kTrapWaitActions azioni (contano come usate)
+      if (hit && !kTableTurns) await loseActions(party, uid, kTrapWaitActions);
       if (hit) return true;
     }
     return false;
@@ -1581,17 +1761,17 @@ class TableService {
 
     if (def.actionPenalty > 0) {
       final players = await PartyService.players(party).get();
-      final group = kTableMode && !kTableTurns ? await groupActions(party) : 0;
       for (final p in players.docs) {
         final user = (await ItemService.userRef(p.id).get()).data();
         final pos = user?['pos'] as Map?;
         if (pos?['zone'] == zone && !(await AbilityService.shieldedZones(p.id, user)).contains(zone)) {
+          if (kTableMode && !kTableTurns) {
+            await loseActions(party, p.id, def.actionPenalty); // fasi del giorno: azioni perse
+            continue;
+          }
           await ItemService.userRef(p.id).set(
               kTableMode
-                  ? (kTableTurns
-                      ? {'actionPenalty': FieldValue.increment(def.actionPenalty)}
-                      // fasi del giorno: fermo finché il gruppo non fa altre N azioni
-                      : {'waitUntilAction': group + def.actionPenalty})
+                  ? {'actionPenalty': FieldValue.increment(def.actionPenalty)}
                   // dal vivo le azioni perse diventano un'attesa
                   : LiveService.addBusy(user, def.actionPenalty * kLivePenaltyMinutes),
               SetOptions(merge: true));

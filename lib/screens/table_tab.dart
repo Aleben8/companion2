@@ -27,6 +27,7 @@ import '../theme.dart';
 import '../widgets/abilities_card.dart';
 import '../widgets/common.dart';
 import '../widgets/drop.dart';
+import '../widgets/game_popups.dart';
 import '../widgets/game_status.dart';
 
 int _i(dynamic v) => v is num ? v.toInt() : 0;
@@ -144,7 +145,7 @@ class _TableTabState extends State<TableTab> {
     }
     final links = await TableService.partyLinks(_party!);
     var sel = TableService.drawBiomes(players).toSet();
-    var perPhase = suggestedPhaseActions(players); // fasi del giorno: azioni del gruppo per fase
+    var perPhase = kDefaultActionsPerPlayer; // fasi del giorno: azioni di ogni giocatore per fase
     if (!mounted) return;
     final biomes = await showDialog<List<String>>(
       context: context,
@@ -163,22 +164,22 @@ class _TableTabState extends State<TableTab> {
               ),
               if (!kTableTurns) ...[
                 const SizedBox(height: 12),
-                const Text('Azioni per fase del giorno', style: TextStyle(fontWeight: FontWeight.w800)),
+                const Text('Azioni di ogni giocatore per fase', style: TextStyle(fontWeight: FontWeight.w800)),
                 Row(children: [
                   IconButton(
-                    onPressed: perPhase > kMinPhaseActions ? () => set(() => perPhase--) : null,
+                    onPressed: perPhase > kMinActionsPerPlayer ? () => set(() => perPhase--) : null,
                     icon: const Icon(Icons.remove_circle_outline),
                   ),
                   Text('$perPhase', style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w800)),
                   IconButton(
-                    onPressed: perPhase < kMaxPhaseActions ? () => set(() => perPhase++) : null,
+                    onPressed: perPhase < kMaxActionsPerPlayer ? () => set(() => perPhase++) : null,
                     icon: const Icon(Icons.add_circle_outline),
                   ),
                 ]),
                 Text(
-                  'Ogni $perPhase azioni fatte da tutto il gruppo si passa alla fase successiva '
-                  '(mattina → pomeriggio → sera → notte). Consigliato: ${suggestedPhaseActions(players)} '
-                  '(una a testa più una), così ognuno agisce circa una volta per fase.',
+                  'Ognuno ha $perPhase ${perPhase == 1 ? 'azione' : 'azioni'} per fase; quando tutti le hanno usate si passa '
+                  'alla fase successiva (mattina → pomeriggio → sera → notte). Le azioni perse (Trappola, eventi) contano '
+                  'come usate; chi non vuole fare nulla può "stare fermo" (+$kWaitHp PS, +$kWaitEnergy energie).',
                   style: const TextStyle(fontSize: 12, color: Pal.sub),
                 ),
                 const SizedBox(height: 8),
@@ -216,7 +217,7 @@ class _TableTabState extends State<TableTab> {
       }),
     );
     if (biomes == null) return;
-    await _run(() => TableService.startGame(_party!, manualEvents: _manualNext, biomes: biomes, phaseActions: perPhase),
+    await _run(() => TableService.startGame(_party!, manualEvents: _manualNext, biomes: biomes, actionsPerPlayer: perPhase),
         ok: 'Partita avviata!');
   }
 
@@ -325,73 +326,12 @@ class _TableTabState extends State<TableTab> {
   }
 
   /// Qualcuno nel settore ti ha notato entrando (è già stato avvisato): elùdilo con un'azione o una Fune di fuga.
-  Widget _spottedCard(Map sp, int ropes) {
-    final z = zoneSpec('${sp['zone']}');
-    return DropCard(
-      colors: const [Color(0xFF5B6B8C), Color(0xFF9AA8C7)],
-      label: 'Ti hanno notato!',
-      labelOnTop: true,
-      child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-        Text('Entrando in ${z.name}, settore ${sp['sector']}, qualcuno ti ha visto.',
-            style: const TextStyle(fontWeight: FontWeight.w700)),
-        Text('Tiro ${sp['roll']} + destrezza = ${sp['total']}, serviva ${sp['cd']}.',
-            style: const TextStyle(color: Pal.sub, fontSize: 12)),
-        const SizedBox(height: 6),
-        const Text(
-          'Chi è nel settore è stato avvisato. Per eluderlo usa $kEludeCost azione oppure una Fune di fuga.',
-          style: TextStyle(fontSize: 12),
-        ),
-        const SizedBox(height: 10),
-        Row(children: [
-          Expanded(
-            child: DropButton(
-              label: 'Eludi ($kEludeCost azione)',
-              icon: Icons.directions_run,
-              height: 44,
-              onTap: _busy ? null : () => _run(() => TableService.elude(_party!, _s.userName!), ok: 'Ti sei allontanato'),
-            ),
-          ),
-          const SizedBox(width: 10),
-          Expanded(
-            child: DropButton(
-              label: 'Fune di fuga ×$ropes',
-              icon: Icons.logout,
-              colors: Pal.neutral,
-              height: 44,
-              onTap: _busy || ropes <= 0
-                  ? null
-                  : () => _run(() => TableService.elude(_party!, _s.userName!, rope: true), ok: 'Ti sei allontanato con la Fune di fuga'),
-            ),
-          ),
-        ]),
-      ]),
-    );
-  }
-
-  /// Chi hai notato entrare nel tuo settore (questo giro e il precedente). Resta visibile anche se
-  /// l'avviso a comparsa è passato mentre la app era chiusa.
-  Widget _sightings(String me, int round) => StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-        stream: TableService.watchSightings(_party!, me),
-        builder: (context, snap) {
-          final rows = [
-            for (final d in snap.data?.docs ?? <QueryDocumentSnapshot<Map<String, dynamic>>>[])
-              if (d.data()['type'] == 'spotted' && _i(d.data()['round']) >= round - 1) d.data(),
-          ]..sort((a, b) => _i(b['round']).compareTo(_i(a['round'])));
-          if (rows.isEmpty) return const SizedBox.shrink();
-          return DropCard(
-            colors: const [Color(0xFF5B6B8C), Color(0xFF9AA8C7)],
-            label: 'Avvistamenti',
-            labelOnTop: true,
-            child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-              for (final r in rows.take(4))
-                Padding(
-                  padding: const EdgeInsets.only(bottom: 4),
-                  child: Text('👀 ${r['uid']} è entrato nel tuo settore '
-                      '(${zoneSpec('${r['zone']}').name}, settore ${r['sector']}) · ${roundRef(r['round'])}'),
-                ),
-            ]),
-          );
-        },
+  Widget _spottedCard(Map sp, int ropes) => DropCard(
+        colors: spottedColors,
+        label: 'Ti hanno notato!',
+        labelOnTop: true,
+        // stesse scelte del popup: eludere, fuggire con la Fune, restare allo scoperto
+        child: SpottedActions(party: _party!, uid: _s.userName!, close: () {}),
       );
 
   /// Incontro selvatico (settore selvaggio): affrontarlo o fuggire.
@@ -595,7 +535,6 @@ class _TableTabState extends State<TableTab> {
                     if (table && spotted != null) _spottedCard(spotted, ropes),
                     if (table && wild != null) _wildCard(wild),
                     if (table && locals != null) _localsCard(locals, me),
-                    if (table) _sightings(me, _i(st!['round'])),
                     if (table && _master) _localsRequests(),
                     if (table) ...[
                       _positionCard(pos, st: st, events: events, me: me, user: uSnap.data),
@@ -835,9 +774,12 @@ class _TableTabState extends State<TableTab> {
   /// Fasi del giorno: in che fase siamo, quante azioni mancano alla prossima e cosa puoi fare tu.
   Widget _phaseCard(Map<String, dynamic> st, Map<String, dynamic>? user, String me) {
     final round = max(1, _i(st['round']));
-    final per = (_i(st['phaseActions']) < 1 ? 4 : _i(st['phaseActions']));
-    final done = _i(st['actions']) % (per < 1 ? 1 : per);
+    final per = actionsPerPlayer(st);
+    final used = usedActions(st, me);
+    final lostNow = used - min(used, _i((st['used'] as Map?)?[me])); // azioni perse in questa fase
+    final waiting = waitingFor(st);
     final general = actBlock(state: st, user: user, uid: me, kind: '_');
+    final waitBlock = actBlock(state: st, user: user, uid: me, kind: ActKind.wait);
     final last = user?['lastKind'] as String?;
     final moves = [for (final m in (user?['zoneMoves'] as List? ?? const [])) _i(m)];
     final today = moves.where((m) => dayOf(m) == dayOf(round)).length;
@@ -850,20 +792,42 @@ class _TableTabState extends State<TableTab> {
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         Text('${phaseIcon(round)} ${phaseName(round)}', style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w800)),
         const SizedBox(height: 8),
+        // le tue azioni di questa fase (in rosso quelle perse per Trappola o eventi)
         Row(children: [
           for (var i = 0; i < per; i++)
             Padding(
               padding: const EdgeInsets.only(right: 5),
-              child: Icon(i < done ? Icons.circle : Icons.circle_outlined, size: 16, color: i < done ? Pal.warn : Pal.line),
+              child: Icon(i < used ? Icons.circle : Icons.circle_outlined,
+                  size: 16, color: i < used ? (i >= used - lostNow ? Pal.bad : Pal.warn) : Pal.line),
             ),
           const SizedBox(width: 4),
           Flexible(
             child: Text(
-              '${per - done} ${per - done == 1 ? 'azione' : 'azioni'} a ${phaseName(round + 1).toLowerCase()}',
+              'Le tue azioni: ${per - used} di $per${lostNow > 0 ? ' ($lostNow perse)' : ''}',
               style: const TextStyle(color: Pal.sub, fontWeight: FontWeight.w700, fontSize: 13),
             ),
           ),
         ]),
+        if (lostActions(st, me) > 0 && (ItemService.readInventory(user)['fune'] ?? 0) > 0)
+          Padding(
+            padding: const EdgeInsets.only(top: 6),
+            child: DropButton(
+              label: 'Fune di fuga: recupera le azioni perse',
+              icon: Icons.logout,
+              colors: const [Color(0xFFB5694F), Color(0xFFD9A07A)],
+              height: 40,
+              busy: _busy,
+              onTap: () => _run(() => ItemService.useRopeOnTrap(me), ok: 'Sei fuggito dalla trappola: hai di nuovo le tue azioni'),
+            ),
+          ),
+        const SizedBox(height: 4),
+        Text(
+          waiting.isEmpty
+              ? 'Tutti hanno finito: si passa a ${phaseName(round + 1).toLowerCase()}'
+              : 'Per passare a ${phaseName(round + 1).toLowerCase()} mancano: '
+                  '${[for (final p in waiting) '${p == me ? 'tu' : p} (${actionsLeft(st, p)})'].join(', ')}',
+          style: const TextStyle(color: Pal.sub, fontSize: 12),
+        ),
         const SizedBox(height: 10),
         Text(
           general == null ? '✅ Puoi agire' : '⏳ $general',
@@ -880,6 +844,20 @@ class _TableTabState extends State<TableTab> {
         ),
         if (lastUid != null)
           Text('Ultimo ad agire: ${lastUid == me ? 'tu' : lastUid}', style: const TextStyle(color: Pal.sub, fontSize: 12)),
+        const SizedBox(height: 10),
+        DropButton(
+          label: waitBlock == null ? 'Stai fermo (1 azione · +$kWaitHp PS, +$kWaitEnergy energie)' : 'Stai fermo · ${waitBlock.toLowerCase()}',
+          icon: Icons.self_improvement,
+          colors: const [Color(0xFF5B6B8C), Color(0xFF9AA8C7)],
+          height: 42,
+          busy: _busy,
+          onTap: waitBlock != null || user?['wildEncounter'] is Map || user?['spotted'] is Map
+              ? null
+              : () => _run(() async {
+                    final msg = await TableService.waitInPlace(_party!, me);
+                    if (mounted) snack(context, msg);
+                  }),
+        ),
       ]),
     );
   }
@@ -1356,8 +1334,7 @@ class TurnBar extends StatelessWidget {
   /// Fasi del giorno: giorno, fase e azioni che mancano alla prossima.
   Widget _phaseBar(Map<String, dynamic> st) {
     final round = max(1, _i(st['round']));
-    final per = _i(st['phaseActions']) < 1 ? 4 : _i(st['phaseActions']);
-    final left = per - _i(st['actions']) % per;
+    final waiting = waitingFor(st).length;
     return Container(
       margin: const EdgeInsets.only(top: 8),
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
@@ -1372,7 +1349,7 @@ class TurnBar extends StatelessWidget {
         Expanded(
           child: Text(phaseLabel(round), overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w800)),
         ),
-        Text('$left a ${phaseName(round + 1).toLowerCase()}',
+        Text(waiting == 0 ? 'tutti pronti' : (waiting == 1 ? 'manca 1 giocatore' : 'mancano $waiting giocatori'),
             style: const TextStyle(color: Pal.sub, fontWeight: FontWeight.w700, fontSize: 12)),
       ]),
     );
@@ -1572,11 +1549,9 @@ class _TableWatcherState extends State<TableWatcher> {
     if (!_started) return;
     if (kTableMode && !kTableTurns) {
       // fasi del giorno: avviso al cambio di fase (niente "tocca a te")
+      // il popup della nuova fase lo apre GamePopupsWatcher (lib/widgets/game_popups.dart)
       final r = _i(st['round']);
-      if (_lastRound != null && r > _lastRound! && mounted) {
-        HapticFeedback.mediumImpact();
-        snack(context, '${phaseIcon(r)} ${phaseLabel(r)}');
-      }
+      if (_lastRound != null && r > _lastRound! && mounted) HapticFeedback.mediumImpact();
       _lastRound = r;
       return;
     }

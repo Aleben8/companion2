@@ -177,8 +177,8 @@ const List<ItemDef> kItems = [
     'Potrai uscire da uno scontro: la battaglia termina all’istante e il party deve allontanarsi in una '
         'direzione casuale. Si applica la regola del doppio scontro: le due squadre non potranno '
         'scontrarsi subito dopo.',
-    'Si usa in battaglia, quando cadi in una Trappola, oppure per eludere chi ti ha notato entrando in un settore '
-        '(nessuno vede nulla).',
+    'Si usa in battaglia, quando cadi in una Trappola, oppure quando qualcuno ti nota entrando in un settore: '
+        'fuggi in un altro settore della zona (nessuno vede dove).',
     [Color(0xFFB5694F), Color(0xFFD9A07A)],
     liveUsage: 'Si usa in battaglia, oppure quando cadi in una Trappola.',
     category: ItemCategory.battaglia, price: 3, icon: Icons.logout, rarity: 3,
