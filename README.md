@@ -334,6 +334,24 @@ Il motore dei turni (`computeTurn`) li applica così (costanti in fondo a `lib/a
 Gli effetti "la prima volta" segnano sul combattente `used_pugno`, `used_riflessi`, `used_secrezione`, `used_rinforzo`,
 `used_incanto`. Tutto finisce nel resoconto del turno. Test: `test/battle_abilities_test.dart`.
 
+### Abilità: scelte di implementazione (da confermare dopo le prime partite)
+
+Dove `abilita.md` lasciava spazio a interpretazioni:
+- chi usa un'abilità di settore o di zona non ne subisce gli effetti (Gelata, Fiammata, Barricata, Sismo, Rovi, Esca, Distrazione, Sciame);
+- **Corazza** passa anche il **Sismo** ("bloccato come per la frana"); la **Chiave** non sblocca Barricata e Sismo;
+- **Sciame** blocca anche **Impulso** e **Fiuto** (sono un Radar e una Lente senza strumento);
+- **Distrazione** blocca solo "Cerca indizi": lo **Scavo** non è un "Cerca" e resta permesso;
+- **Rovi** lascia la traccia evidente anche a chi ha il Passo felpato e non porta mai sotto 1 PS;
+- **Esca tossica** non scatta su chi ha **Immunità** (resta per il prossimo);
+- **Spavento** al tavolo ferma il bersaglio finché il gruppo non fa un'altra azione (con i turni: un'azione in meno al prossimo);
+- **Rinforzo** dimezza il primo colpo anche se è imbloccabile; la **Schiva** continua a evitare sempre lo status, come prima;
+- **Tenacia** dopo la sconfitta toglie anche lo status alterato;
+- nessuna attiva ha il flag "di reazione": la reazione gratuita è il bottone *Sfida* dell'**Imboscata**;
+- la **MT** resta legata al primo badge "storico" di quella palestra (`badges`, come lo strumento di oggi), lo sblocco delle
+  abilità ai badge della partita (`gameBadges`);
+- lo stato delle abilità si azzera con "Nuova partita" / "Avvia o Riavvia la partita" (anche dal vivo); "Rigenera
+  capipalestra" nella schermata Palestre non lo tocca.
+
 ## Indizi sulla mappa (live e tavolo)
 
 Tab **Party**, scheda "Indizi sulla mappa" (piazzamento, indizi trovati e dichiarati). La **ricerca** sta nella sezione dei movimenti:
